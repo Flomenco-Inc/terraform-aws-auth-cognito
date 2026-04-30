@@ -68,13 +68,12 @@ def _create_personal_org_membership(user_id: str) -> str:
     except ClientError as exc:
         if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
             # Membership already exists — e.g. admin re-confirmed the user.
+            # The condition is on the PK alone (attribute_not_exists(user_id))
+            # so *any* row with this user_id already exists.  We can't cheaply
+            # retrieve the existing org_id without a Query; return the newly-
+            # generated org_id as a sentinel — the pre-token-gen trigger will
+            # query for all memberships on the next login and find the real one.
             logger.info("membership already exists for user_id=%s; skipping", user_id)
-            # Fetch the existing org_id so callers can still use it.
-            resp = _table.get_item(Key={"user_id": user_id, "org_id": org_id})
-            if resp.get("Item"):
-                return str(resp["Item"]["org_id"])
-            # We can't recover the existing org_id cheaply without a scan or
-            # GSI; return a sentinel and let the pre-token-gen handle it.
             return org_id
         raise
 
