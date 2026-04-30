@@ -164,7 +164,8 @@ resource "aws_cognito_user_pool_client" "spa" {
 
   explicit_auth_flows = [
     "ALLOW_REFRESH_TOKEN_AUTH",
-    "ALLOW_USER_SRP_AUTH", # SRP for email/password; required by amplify-auth
+    "ALLOW_USER_SRP_AUTH",        # SRP for email/password; required by amplify-auth
+    "ALLOW_USER_PASSWORD_AUTH",   # plaintext password flow; required by machine users (pipeline-service) and testing
   ]
 
   prevent_user_existence_errors = "ENABLED"
