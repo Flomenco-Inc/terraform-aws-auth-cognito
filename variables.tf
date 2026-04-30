@@ -169,3 +169,25 @@ variable "pre_token_generation_timeout_seconds" {
   type        = number
   default     = 4
 }
+
+#------------------------------------------------------------------------------
+# Post-confirmation Lambda
+#------------------------------------------------------------------------------
+
+variable "post_confirmation_log_retention_days" {
+  description = "CloudWatch log retention for the post-confirmation Lambda."
+  type        = number
+  default     = 30
+}
+
+variable "post_confirmation_memory_mb" {
+  description = "Memory allocated to the post-confirmation Lambda."
+  type        = number
+  default     = 128
+}
+
+variable "post_confirmation_timeout_seconds" {
+  description = "Lambda timeout in seconds. Post-confirmation blocks the user's sign-up if it exceeds Cognito's 5s limit."
+  type        = number
+  default     = 4
+}

@@ -70,11 +70,17 @@ resource "aws_cognito_user_pool" "this" {
   # Pre-token-generation V2 gives us arrays/objects in claims (vs V1's
   # string-only limitation). org_memberships lands as a real JSON array
   # at the JWT root — no string parsing on the consumer side.
+  #
+  # Post-confirmation writes the user's initial personal-org membership to
+  # DynamoDB so that pre_token_generation always has a primary_org_id to
+  # inject on the very first login.
   lambda_config {
     pre_token_generation_config {
       lambda_arn     = aws_lambda_function.pre_token_generation.arn
       lambda_version = "V2_0"
     }
+
+    post_confirmation = aws_lambda_function.post_confirmation.arn
   }
 
   # Custom attributes users can self-set. Intentionally minimal — the
