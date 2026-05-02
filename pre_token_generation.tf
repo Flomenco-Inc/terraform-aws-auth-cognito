@@ -57,9 +57,11 @@ data "aws_iam_policy_document" "pre_token_generation" {
     ]
   }
 
-  # Read-only against the memberships table + GSI. The Lambda has NO
-  # write access by design — membership mutations belong in app code
-  # with its own principals, not in this trigger.
+  # Read + conditional-write against the memberships table + GSI.
+  # PutItem is scoped to the table only (not GSIs, which are read-only
+  # projections). The Lambda uses a ConditionExpression so it only writes
+  # when no membership exists yet — handles federated/social logins (e.g.
+  # Google OAuth) where the post_confirmation trigger never fires.
   statement {
     sid    = "ReadMemberships"
     effect = "Allow"
@@ -70,6 +72,17 @@ data "aws_iam_policy_document" "pre_token_generation" {
     resources = [
       aws_dynamodb_table.memberships.arn,
       "${aws_dynamodb_table.memberships.arn}/index/*",
+    ]
+  }
+
+  statement {
+    sid    = "ProvisionPersonalOrg"
+    effect = "Allow"
+    actions = [
+      "dynamodb:PutItem",
+    ]
+    resources = [
+      aws_dynamodb_table.memberships.arn,
     ]
   }
 }
