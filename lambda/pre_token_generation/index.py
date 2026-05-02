@@ -14,6 +14,14 @@ Cognito fails the login if this trigger exceeds 5s end-to-end. Keep the
 DDB query single-partition (PK = user_id) — a user with hundreds of
 memberships is a red flag worth surfacing rather than silently bloating
 the JWT.
+
+Auto-provisioning:
+    If the memberships query returns no results (new social/federated user
+    such as Google OAuth, or a user whose post_confirmation trigger was
+    missed), this Lambda creates one personal-workspace OWNER membership
+    inline before minting the token. This ensures federated users always
+    receive a real primary_org_id and their uploads/resources are never
+    silently scoped to the "default" fallback tenant.
 """
 
 from __future__ import annotations
@@ -21,10 +29,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 import boto3
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 MEMBERSHIPS_TABLE = os.environ["MEMBERSHIPS_TABLE"]
@@ -76,6 +87,54 @@ def _fetch_memberships(user_id: str) -> list[dict[str, str]]:
     return memberships
 
 
+def _provision_personal_org(user_id: str) -> dict[str, str]:
+    """Create an OWNER membership for a user who has none.
+
+    Called when a federated/social login (e.g. Google OAuth) completes and
+    no existing membership rows are found — the post_confirmation trigger is
+    never fired for social users so we must provision inline.
+
+    Uses a ConditionExpression to guard against races (two concurrent first
+    logins). On conflict we re-query to pick up the real org_id.
+
+    Returns a membership dict {org_id, role}.
+    """
+    org_id = f"org_{uuid.uuid4()}"
+    now = datetime.now(timezone.utc).isoformat()
+
+    try:
+        _table.put_item(
+            Item={
+                "user_id": user_id,
+                "org_id": org_id,
+                "role": "OWNER",
+                "created_at": now,
+            },
+            ConditionExpression="attribute_not_exists(user_id)",
+        )
+        logger.info(
+            "auto-provisioned personal org for federated user user_id=%s org_id=%s",
+            user_id,
+            org_id,
+        )
+        return {"org_id": org_id, "role": "OWNER"}
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            # A parallel invocation already wrote the row — re-query to pick
+            # up the real org_id instead of the throwaway one we generated.
+            logger.info(
+                "race: membership already exists for user_id=%s; re-querying",
+                user_id,
+            )
+            existing = _fetch_memberships(user_id)
+            if existing:
+                return existing[0]
+            # Extremely unlikely — log and fall back gracefully.
+            logger.error("membership still missing after race for user_id=%s", user_id)
+            return {"org_id": org_id, "role": "OWNER"}
+        raise
+
+
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Pre-token-generation V2 entrypoint.
 
@@ -102,6 +161,20 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         # Log full traceback to CloudWatch but don't fail auth.
         logger.exception("failed to fetch memberships for user_id=%s", user_id)
         memberships = []
+
+    # Auto-provision a personal org for social/federated users (e.g. Google
+    # OAuth) whose post_confirmation trigger never fires, leaving them with
+    # no membership rows and causing uploads to land in the "default" tenant.
+    if not memberships:
+        try:
+            new_membership = _provision_personal_org(user_id)
+            memberships = [new_membership]
+        except Exception:
+            logger.exception(
+                "failed to auto-provision personal org for user_id=%s; "
+                "token will have empty memberships",
+                user_id,
+            )
 
     primary_org_id = memberships[0]["org_id"] if memberships else None
 
