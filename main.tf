@@ -34,10 +34,14 @@ locals {
   # so templates always have a valid link even without var.app_url.
   signin_url = coalesce(var.app_url, "https://floapp.co")
 
-  # Invite email — HTML when SES is configured (DEVELOPER mode), plain
-  # text fallback for COGNITO_DEFAULT (which ignores HTML tags anyway).
+  # Logo tag: use img when logo_url provided, otherwise a text wordmark.
+  _logo_html = var.logo_url != null ? "<img src=\"${var.logo_url}\" alt=\"Flo\" height=\"36\" style=\"display:block;margin:0 auto;\">" : "<span style=\"color:#ffffff;font-size:24px;font-weight:700;letter-spacing:-0.5px;\">Flo</span>"
+
+  # Invite email HTML — always rendered; Cognito only uses it when the pool
+  # email mode is DEVELOPER (SES). In COGNITO_DEFAULT mode the HTML is
+  # ignored and Cognito uses its own plain-text fallback.
   # Cognito requires {username} and {####} placeholders exactly as-is.
-  invite_email_html = var.ses_source_arn != null ? <<-HTML
+  invite_email_html = <<-HTML
     <!DOCTYPE html>
     <html lang="en">
     <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
@@ -47,7 +51,7 @@ locals {
           <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
 
             <tr><td style="background:#0f0f0f;padding:32px 40px;text-align:center;">
-              ${var.logo_url != null ? "<img src=\"${var.logo_url}\" alt=\"Flo\" height=\"36\" style=\"display:block;margin:0 auto;\">" : "<span style=\"color:#ffffff;font-size:24px;font-weight:700;letter-spacing:-0.5px;\">Flo</span>"}
+              ${local._logo_html}
             </td></tr>
 
             <tr><td style="padding:40px;">
@@ -96,5 +100,4 @@ locals {
     </body>
     </html>
   HTML
-  : "You've been invited to Flo. Your username is {username} and temporary password is {####}. Sign in at ${local.signin_url}"
 }
