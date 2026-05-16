@@ -34,11 +34,13 @@ resource "aws_cognito_user_pool" "this" {
   }
 
   # Email: Cognito default transport day one (50/day, unauthenticated From
-  # address). For any real traffic, swap to SES — this is configured
-  # out-of-band via aws_cognito_user_pool.email_configuration in a follow-up
-  # once the SES identity + DKIM are ready.
+  # address). Switch to SES by setting ses_source_arn — this enables a
+  # custom From address and HTML templates.
   email_configuration {
-    email_sending_account = "COGNITO_DEFAULT"
+    email_sending_account  = var.ses_source_arn != null ? "DEVELOPER" : "COGNITO_DEFAULT"
+    source_arn             = var.ses_source_arn
+    from_email_address     = var.ses_from_email
+    reply_to_email_address = var.ses_reply_to_email
   }
 
   # Account recovery via verified email only. Don't fall back to phone
@@ -55,16 +57,16 @@ resource "aws_cognito_user_pool" "this" {
     allow_admin_create_user_only = false
 
     invite_message_template {
-      email_subject = "You've been invited to ${local.name_prefix}"
-      email_message = "Your username is {username} and temporary password is {####}."
-      sms_message   = "Your username is {username} and temporary password is {####}."
+      email_subject = "You've been invited to Flo"
+      email_message = local.invite_email_html
+      sms_message   = "You've been invited to Flo. Your username is {username} and temporary password is {####}."
     }
   }
 
   verification_message_template {
     default_email_option = "CONFIRM_WITH_CODE"
-    email_subject        = "Verify your email for ${local.name_prefix}"
-    email_message        = "Your verification code is {####}."
+    email_subject        = "Verify your Flo account"
+    email_message        = "Your Flo verification code is {####}."
   }
 
   # Pre-token-generation V2 gives us arrays/objects in claims (vs V1's
@@ -96,6 +98,19 @@ resource "aws_cognito_user_pool" "this" {
     string_attribute_constraints {
       min_length = 1
       max_length = 64
+    }
+  }
+
+  schema {
+    name                     = "role"
+    attribute_data_type      = "String"
+    mutable                  = true
+    required                 = false
+    developer_only_attribute = false
+
+    string_attribute_constraints {
+      min_length = 0
+      max_length = 32
     }
   }
 

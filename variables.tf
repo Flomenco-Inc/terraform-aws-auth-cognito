@@ -171,6 +171,45 @@ variable "pre_token_generation_timeout_seconds" {
 }
 
 #------------------------------------------------------------------------------
+# Email sending (SES)
+#
+# Day-one default is COGNITO_DEFAULT (50/day, shared no-reply@ address).
+# Set ses_source_arn to switch to DEVELOPER mode (SES) for a custom From
+# address and HTML templates. SES identity + DKIM must be verified in the
+# same region before applying.
+#------------------------------------------------------------------------------
+
+variable "ses_source_arn" {
+  description = "ARN of the SES verified identity (domain or email) to use as the sending source. When set, switches email_sending_account to DEVELOPER. Must be in the same region as the user pool."
+  type        = string
+  default     = null
+}
+
+variable "ses_from_email" {
+  description = "From address shown to recipients, e.g. \"Flo <no-reply@floapp.co>\". Only used when ses_source_arn is set. Must match the verified SES identity."
+  type        = string
+  default     = null
+}
+
+variable "ses_reply_to_email" {
+  description = "Reply-To address for outbound emails. Optional; only used when ses_source_arn is set."
+  type        = string
+  default     = null
+}
+
+variable "app_url" {
+  description = "Base URL of the application (e.g. \"https://dev.floapp.co\"). Used in email templates as the sign-in link."
+  type        = string
+  default     = null
+}
+
+variable "logo_url" {
+  description = "HTTPS URL to the Flo logo image for HTML email templates. Optional; omitted when null."
+  type        = string
+  default     = null
+}
+
+#------------------------------------------------------------------------------
 # Post-confirmation Lambda
 #------------------------------------------------------------------------------
 
