@@ -1,0 +1,36 @@
+---
+description: Protocol for maintaining LEARNINGS.md — the persistent knowledge base for this repo
+alwaysApply: true
+---
+
+# Learnings Protocol
+
+`LEARNINGS.md` at the repo root is a **persistent knowledge base** shared by all agents and humans working here. It captures non-obvious discoveries, gotchas, and workarounds so they are never re-discovered.
+
+## When to add an entry
+
+- Any time a fix involved a non-obvious cause (would the next person know why without this note?)
+- Any time CI failed due to a quirk in tooling, dependencies, or conventions
+- Any time a workaround was needed that isn't obvious from the code itself
+- After any debugging session that took more than a few minutes to resolve
+
+## How to add an entry
+
+Append at the **end** of `LEARNINGS.md`. Never edit existing entries — if something is superseded, add a new entry linking back.
+
+Use the template in the file header:
+
+```md
+## YYYY-MM-DD: <short, specific title>
+
+**Context:** What you were trying to do.
+**Symptom:** What broke or surprised you.
+**Cause:** Why it broke — the thing the next person needs to know.
+**Resolution:** What you did. Paste exact commands/lines if possible.
+**Codified in:** Where this is now enforced. If nowhere yet, say "this entry only".
+**References:** PRs, issues, upstream bugs, docs.
+```
+
+## Cross-repo learnings
+
+If a learning applies broadly (across multiple repos or to AWS/tooling in general), also append it to `flo-docs/LEARNINGS.md`.

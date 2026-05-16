@@ -1,0 +1,27 @@
+---
+description: Git workflow and learnings protocol for terraform-aws-auth-cognito
+alwaysApply: true
+---
+
+# terraform-aws-auth-cognito Workflow
+
+## What this module is
+
+Reusable Terraform module for Cognito user pools, triggers, and SES email config.
+Consumed by `flo-core-services` `auth` leaves via `git::https://...?ref=main`.
+
+## Pull requests to `main`
+
+- **Never push directly to `main`.** Create a **feature branch**, open a **PR**.
+- **Feature branch → `main` PRs do not require human approval.** Once CI (CodeRabbit) passes, merge immediately with `gh pr merge <n> --rebase`. Do not wait for the user.
+- Only rebase merges are allowed (squash and merge-commit are disabled).
+
+## HCL gotchas
+
+- **No heredocs inside ternary conditionals.** Terraform does not support `condition ? <<-HEREDOC ... HEREDOC : fallback`. Extract the heredoc into its own `local` first.
+- **No nested interpolations inside heredocs.** Extract sub-expressions into separate locals, then reference `${local.foo}` inside the heredoc.
+- Module has **no `provider` block** — callers own provider config. Adding one causes "Duplicate provider configuration" errors in Terragrunt.
+
+## Learnings protocol
+
+Append an entry to `LEARNINGS.md` in this repo at the end of every session whenever a non-obvious discovery is made. Cross-repo learnings also go in `flo-docs/LEARNINGS.md`.
