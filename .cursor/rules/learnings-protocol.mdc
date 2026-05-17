@@ -27,9 +27,25 @@ Use the template in the file header:
 **Symptom:** What broke or surprised you.
 **Cause:** Why it broke — the thing the next person needs to know.
 **Resolution:** What you did. Paste exact commands/lines if possible.
-**Codified in:** Where this is now enforced. If nowhere yet, say "this entry only".
+**Codified in:** Rule file path (see below — "this entry only" is NOT acceptable for operational gotchas).
 **References:** PRs, issues, upstream bugs, docs.
 ```
+
+## MANDATORY: Always create a rule file for operational gotchas
+
+**"This entry only" is not acceptable** for any learning that describes a required workflow step, a checklist item, or a build/deploy gotcha. These MUST be promoted to a `.cursor/rules/*.mdc` file in the same session.
+
+Criteria for mandatory rule creation:
+- The bug would recur the next time anyone adds a similar file/resource/config
+- The fix involves a non-obvious checklist step (e.g. "you must also update file X")
+- The cause is a gap between what the code looks like and how it actually deploys
+
+Rule files live in `.cursor/rules/` in the most specific applicable location:
+- Module-specific → `modules/<module>/.cursor/rules/<topic>.mdc`
+- Repo-wide → `.cursor/rules/<topic>.mdc`
+- Cross-repo → also update `flo-docs/LEARNINGS.md`
+
+Set `alwaysApply: true` for rules that must fire every time work happens in that context.
 
 ## Cross-repo learnings
 
