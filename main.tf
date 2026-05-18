@@ -82,6 +82,12 @@ locals {
                 </td></tr>
               </table>
 
+              <p style="margin:24px 0 0;font-size:14px;color:#555;line-height:1.6;">
+                <strong style="color:#0f0f0f;">New password requirements:</strong><br>
+                At least ${var.password_minimum_length} characters, including one uppercase letter,
+                one lowercase letter, and one number.${var.password_require_symbols ? " Include at least one symbol." : ""}
+              </p>
+
               <p style="margin:32px 0 0;font-size:13px;color:#aaa;line-height:1.6;text-align:center;">
                 You'll be prompted to set a new password on first sign-in.<br>
                 This temporary password expires in 3 days.
