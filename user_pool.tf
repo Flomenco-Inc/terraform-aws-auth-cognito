@@ -77,6 +77,12 @@ resource "aws_cognito_user_pool" "this" {
   # DynamoDB so that pre_token_generation always has a primary_org_id to
   # inject on the very first login.
   lambda_config {
+    # Account linking: when a Google user's email matches an existing native
+    # (invited) user, link the Google identity to that user before creation
+    # so both authentication methods share the same Cognito sub and the same
+    # memberships row. Only wired when Google federation is enabled.
+    pre_sign_up = var.enable_google ? aws_lambda_function.pre_signup[0].arn : null
+
     pre_token_generation_config {
       lambda_arn     = aws_lambda_function.pre_token_generation.arn
       lambda_version = "V2_0"
