@@ -52,13 +52,13 @@ def _create_personal_org_membership(user_id: str) -> str:
     try:
         _table.put_item(
             Item={
-                "user_id": user_id,
-                "org_id": org_id,
+                "PK": user_id,
+                "SK": org_id,
                 "role": "OWNER",
                 "created_at": now,
             },
             # Don't overwrite if a membership already exists (idempotent).
-            ConditionExpression="attribute_not_exists(user_id)",
+            ConditionExpression="attribute_not_exists(PK)",
         )
         logger.info(
             "created personal org for user_id=%s org_id=%s",

@@ -60,8 +60,8 @@ def _fetch_memberships(user_id: str) -> list[dict[str, str]]:
     """
     memberships: list[dict[str, str]] = []
     kwargs: dict[str, Any] = {
-        "KeyConditionExpression": Key("user_id").eq(user_id),
-        "ProjectionExpression": "org_id, #r",
+        "KeyConditionExpression": Key("PK").eq(user_id),
+        "ProjectionExpression": "SK, #r",
         "ExpressionAttributeNames": {"#r": "role"},
         "Limit": MAX_MEMBERSHIPS_IN_CLAIMS + 1,
     }
@@ -70,7 +70,7 @@ def _fetch_memberships(user_id: str) -> list[dict[str, str]]:
     for item in resp.get("Items", []):
         memberships.append(
             {
-                "org_id": str(item["org_id"]),
+                "org_id": str(item["SK"]),
                 "role": str(item["role"]),
             }
         )
@@ -105,12 +105,12 @@ def _provision_personal_org(user_id: str) -> dict[str, str]:
     try:
         _table.put_item(
             Item={
-                "user_id": user_id,
-                "org_id": org_id,
+                "PK": user_id,
+                "SK": org_id,
                 "role": "OWNER",
                 "created_at": now,
             },
-            ConditionExpression="attribute_not_exists(user_id)",
+            ConditionExpression="attribute_not_exists(PK)",
         )
         logger.info(
             "auto-provisioned personal org for federated user user_id=%s org_id=%s",
