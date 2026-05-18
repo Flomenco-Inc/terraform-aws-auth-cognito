@@ -210,6 +210,28 @@ variable "logo_url" {
 }
 
 #------------------------------------------------------------------------------
+# Pre-signup Lambda (account linking)
+#------------------------------------------------------------------------------
+
+variable "pre_signup_log_retention_days" {
+  description = "CloudWatch log retention for the pre-signup Lambda."
+  type        = number
+  default     = 30
+}
+
+variable "pre_signup_memory_mb" {
+  description = "Memory allocated to the pre-signup Lambda. 128 MB is ample for a ListUsers + AdminLinkProviderForUser call."
+  type        = number
+  default     = 128
+}
+
+variable "pre_signup_timeout_seconds" {
+  description = "Lambda timeout in seconds. Pre-signup must complete within Cognito's 5s hard limit."
+  type        = number
+  default     = 4
+}
+
+#------------------------------------------------------------------------------
 # Post-confirmation Lambda
 #------------------------------------------------------------------------------
 
