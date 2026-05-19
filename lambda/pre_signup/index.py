@@ -30,8 +30,6 @@ from botocore.exceptions import ClientError
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
-USER_POOL_ID: str = os.environ["USER_POOL_ID"]
-
 _cognito: Any = None
 
 
@@ -42,10 +40,10 @@ def _client() -> Any:
     return _cognito
 
 
-def _find_native_user(email: str) -> dict[str, Any] | None:
+def _find_native_user(user_pool_id: str, email: str) -> dict[str, Any] | None:
     """Return the first native (non-federated) Cognito user with this email, or None."""
     result = _client().list_users(
-        UserPoolId=USER_POOL_ID,
+        UserPoolId=user_pool_id,
         Filter=f'email = "{email}"',
         Limit=10,
     )
@@ -57,10 +55,10 @@ def _find_native_user(email: str) -> dict[str, Any] | None:
     return None
 
 
-def _link_provider(native_username: str, provider_name: str, provider_user_id: str) -> None:
+def _link_provider(user_pool_id: str, native_username: str, provider_name: str, provider_user_id: str) -> None:
     """Link the federated identity to the existing native Cognito user."""
     _client().admin_link_provider_for_user(
-        UserPoolId=USER_POOL_ID,
+        UserPoolId=user_pool_id,
         DestinationUser={
             "ProviderName": "Cognito",
             "ProviderAttributeName": "Username",
@@ -80,6 +78,13 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
     if not trigger.startswith("PreSignUp_ExternalProvider"):
         return event
 
+    # Read the user pool ID from the trigger event rather than an env var to
+    # avoid a Terraform cycle between the user pool and this Lambda.
+    user_pool_id: str = event.get("userPoolId", "")
+    if not user_pool_id:
+        logger.warning("PreSignUp trigger fired without userPoolId; skipping link")
+        return event
+
     email: str = event.get("request", {}).get("userAttributes", {}).get("email", "").strip()
     if not email:
         logger.warning("PreSignUp_ExternalProvider fired without an email attribute; skipping link")
@@ -95,7 +100,7 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
     provider_name, provider_user_id = parts[0], parts[1]
 
     try:
-        native = _find_native_user(email)
+        native = _find_native_user(user_pool_id, email)
         if native is None:
             logger.info(
                 "No native user found for email=%s provider=%s; proceeding with new federated identity",
@@ -111,7 +116,7 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             native_username,
             email,
         )
-        _link_provider(native_username, provider_name, provider_user_id)
+        _link_provider(user_pool_id, native_username, provider_name, provider_user_id)
         logger.info("Link succeeded for email=%s", email)
 
     except ClientError as exc:

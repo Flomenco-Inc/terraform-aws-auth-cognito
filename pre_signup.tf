@@ -64,6 +64,10 @@ data "aws_iam_policy_document" "pre_signup" {
 
   # ListUsers: find existing native user by email attribute.
   # AdminLinkProviderForUser: link the Google identity to the native user.
+  # Scoped to all user pools in this account+region to avoid a Terraform cycle:
+  # the user pool ARN is not known until after the pool is created, but the pool
+  # depends on this Lambda, so referencing aws_cognito_user_pool.this.arn here
+  # would create a cycle. The account+region scope is tight enough in practice.
   statement {
     sid    = "AccountLinking"
     effect = "Allow"
@@ -71,7 +75,7 @@ data "aws_iam_policy_document" "pre_signup" {
       "cognito-idp:ListUsers",
       "cognito-idp:AdminLinkProviderForUser",
     ]
-    resources = [aws_cognito_user_pool.this.arn]
+    resources = ["arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/*"]
   }
 }
 
@@ -100,8 +104,11 @@ resource "aws_lambda_function" "pre_signup" {
 
   environment {
     variables = {
-      USER_POOL_ID = aws_cognito_user_pool.this.id
-      LOG_LEVEL    = "INFO"
+      # USER_POOL_ID is intentionally omitted here: the Cognito trigger event
+      # carries event["userPoolId"] at runtime, so injecting it as an env var
+      # would create a Terraform cycle (user_pool → lambda → user_pool).
+      # The Lambda reads it from the event instead.
+      LOG_LEVEL = "INFO"
     }
   }
 
