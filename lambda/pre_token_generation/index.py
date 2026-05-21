@@ -178,23 +178,34 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     primary_org_id = memberships[0]["org_id"] if memberships else None
 
-    claims_to_add: dict[str, Any] = {
-        "org_memberships": memberships,
-    }
-    if primary_org_id is not None:
-        claims_to_add["primary_org_id"] = primary_org_id
+    logger.info(
+        "injecting membership claims user_id=%s primary_org_id=%s count=%d",
+        user_id,
+        primary_org_id,
+        len(memberships),
+    )
 
-    # V2 shape: per-token-type claim overrides. We write to both id token
-    # and access token so API Gateway JWT authorizers (which validate the
-    # access token) see the same memberships as the SPA (which reads the
-    # ID token).
+    # ID token: SPA reads org_memberships as a JSON array.
+    id_claims: dict[str, Any] = {"org_memberships": memberships}
+    if primary_org_id is not None:
+        id_claims["primary_org_id"] = primary_org_id
+
+    # Access token: API Gateway authorizer validates this token. Emit only
+    # string-safe claims (array claims are dropped silently by Cognito in
+    # practice — primary_org_id never lands and tenant falls back to default).
+    access_claims: dict[str, Any] = {}
+    if primary_org_id is not None:
+        access_claims["primary_org_id"] = primary_org_id
+    if memberships:
+        access_claims["org_memberships"] = json.dumps(memberships)
+
     event["response"] = {
         "claimsAndScopeOverrideDetails": {
             "idTokenGeneration": {
-                "claimsToAddOrOverride": claims_to_add,
+                "claimsToAddOrOverride": id_claims,
             },
             "accessTokenGeneration": {
-                "claimsToAddOrOverride": claims_to_add,
+                "claimsToAddOrOverride": access_claims,
             },
         }
     }
