@@ -69,6 +69,11 @@ resource "aws_cognito_user_pool" "this" {
     email_message        = "Your Flo verification code is {####}."
   }
 
+  # Require a verification code when users change email (me-service profile flow).
+  user_attribute_update_settings {
+    attributes_require_verification_before_update = ["email"]
+  }
+
   # Pre-token-generation V2 gives us arrays/objects in claims (vs V1's
   # string-only limitation). org_memberships lands as a real JSON array
   # at the JWT root — no string parsing on the consumer side.
