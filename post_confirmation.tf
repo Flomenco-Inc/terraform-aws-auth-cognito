@@ -86,8 +86,10 @@ resource "aws_lambda_function" "post_confirmation" {
 
   environment {
     variables = {
-      MEMBERSHIPS_TABLE = aws_dynamodb_table.memberships.name
-      LOG_LEVEL         = "INFO"
+      MEMBERSHIPS_TABLE           = aws_dynamodb_table.memberships.name
+      LOG_LEVEL                   = "INFO"
+      SUBSCRIPTION_API_URL        = var.subscription_api_url
+      INTERNAL_PROVISION_SECRET   = var.internal_provision_secret
     }
   }
 
