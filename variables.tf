@@ -252,3 +252,16 @@ variable "post_confirmation_timeout_seconds" {
   type        = number
   default     = 4
 }
+
+variable "subscription_api_url" {
+  description = "Base URL for subscription-service API Gateway (no trailing slash). Used by Cognito triggers for tenant/org provisioning."
+  type        = string
+  default     = ""
+}
+
+variable "internal_provision_secret" {
+  description = "Shared secret for subscription-service internal provision endpoints (x-internal-provision-secret)."
+  type        = string
+  default     = ""
+  sensitive   = true
+}

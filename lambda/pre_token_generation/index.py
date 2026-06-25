@@ -1,27 +1,10 @@
 """Cognito pre-token-generation trigger (V2).
 
-On every token mint (login + refresh), query DynamoDB for the user's
-org memberships and inject them into the ID + access token claims.
+Queries org memberships and injects TENANT_ORG_MODEL claims:
+  tenant_id, org_id, org_memberships[{tenant_id, org_id, role}]
 
-Shape of the injected claims (at JWT root, not namespaced):
-    org_memberships: list[{"org_id": str, "role": str}]
-    primary_org_id:  str | None
-
-Runtime: python3.12. No external dependencies — boto3 + stdlib only so
-the deployment zip stays tiny (~3KB) and cold starts stay fast (~400ms).
-
-Cognito fails the login if this trigger exceeds 5s end-to-end. Keep the
-DDB query single-partition (PK = user_id) — a user with hundreds of
-memberships is a red flag worth surfacing rather than silently bloating
-the JWT.
-
-Auto-provisioning:
-    If the memberships query returns no results (new social/federated user
-    such as Google OAuth, or a user whose post_confirmation trigger was
-    missed), this Lambda creates one personal-workspace OWNER membership
-    inline before minting the token. This ensures federated users always
-    receive a real primary_org_id and their uploads/resources are never
-    silently scoped to the "default" fallback tenant.
+Backfills missing tenant_id via subscription-service GET /internal/orgs/{orgId}/config.
+Auto-provisions federated users via POST /internal/provision/signup when empty.
 """
 
 from __future__ import annotations
@@ -29,127 +12,91 @@ from __future__ import annotations
 import json
 import logging
 import os
-import uuid
-from datetime import datetime, timezone
 from typing import Any
 
 import boto3
 from boto3.dynamodb.conditions import Key
-from botocore.exceptions import ClientError
+
+from subscription_client import get_org_config, provision_signup
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 MEMBERSHIPS_TABLE = os.environ["MEMBERSHIPS_TABLE"]
-
-# JWTs have a practical size ceiling (~8KB before browsers start rejecting
-# cookies / headers). A user in 50 orgs at ~80 bytes per entry is already
-# 4KB of claims alone; truncate defensively and log a warning so we can
-# investigate rather than silently break auth.
 MAX_MEMBERSHIPS_IN_CLAIMS = 50
 
 logger = logging.getLogger()
 logger.setLevel(LOG_LEVEL)
 
-# Module-level client reuse across warm invocations.
 _ddb = boto3.resource("dynamodb")
 _table = _ddb.Table(MEMBERSHIPS_TABLE)
+_org_config_cache: dict[str, dict[str, str]] = {}
+
+
+def _resolve_tenant_id(org_id: str, item_tenant_id: str | None) -> str | None:
+    if item_tenant_id:
+        return str(item_tenant_id)
+    cached = _org_config_cache.get(org_id)
+    if cached and cached.get("tenantId"):
+        return cached["tenantId"]
+    config = get_org_config(org_id)
+    if config and config.get("tenantId"):
+        _org_config_cache[org_id] = {
+            "tenantId": str(config["tenantId"]),
+            "orgId": str(config.get("orgId", org_id)),
+        }
+        return str(config["tenantId"])
+    return None
 
 
 def _fetch_memberships(user_id: str) -> list[dict[str, str]]:
-    """Query the memberships table for the given user. Returns a list of
-    {org_id, role} dicts ordered as DynamoDB returns them (sort key asc).
-    """
     memberships: list[dict[str, str]] = []
-    kwargs: dict[str, Any] = {
-        "KeyConditionExpression": Key("PK").eq(user_id),
-        "ProjectionExpression": "SK, #r",
-        "ExpressionAttributeNames": {"#r": "role"},
-        "Limit": MAX_MEMBERSHIPS_IN_CLAIMS + 1,
-    }
-
-    resp = _table.query(**kwargs)
+    resp = _table.query(
+        KeyConditionExpression=Key("PK").eq(user_id),
+        ProjectionExpression="SK, #r, tenant_id",
+        ExpressionAttributeNames={"#r": "role"},
+        Limit=MAX_MEMBERSHIPS_IN_CLAIMS + 1,
+    )
     for item in resp.get("Items", []):
-        memberships.append(
-            {
-                "org_id": str(item["SK"]),
-                "role": str(item["role"]),
-            }
-        )
+        org_id = str(item["SK"])
+        tenant_id = _resolve_tenant_id(org_id, item.get("tenant_id"))
+        entry: dict[str, str] = {
+            "org_id": org_id,
+            "role": str(item["role"]),
+        }
+        if tenant_id:
+            entry["tenant_id"] = tenant_id
+        memberships.append(entry)
 
     if len(memberships) > MAX_MEMBERSHIPS_IN_CLAIMS:
         logger.warning(
-            "user %s has %d memberships; truncating to %d in claims",
+            "user %s has %d memberships; truncating to %d",
             user_id,
             len(memberships),
             MAX_MEMBERSHIPS_IN_CLAIMS,
         )
         memberships = memberships[:MAX_MEMBERSHIPS_IN_CLAIMS]
-
     return memberships
 
 
-def _provision_personal_org(user_id: str) -> dict[str, str]:
-    """Create an OWNER membership for a user who has none.
-
-    Called when a federated/social login (e.g. Google OAuth) completes and
-    no existing membership rows are found — the post_confirmation trigger is
-    never fired for social users so we must provision inline.
-
-    Uses a ConditionExpression to guard against races (two concurrent first
-    logins). On conflict we re-query to pick up the real org_id.
-
-    Returns a membership dict {org_id, role}.
-    """
-    org_id = f"org_{uuid.uuid4()}"
-    now = datetime.now(timezone.utc).isoformat()
-
-    try:
-        _table.put_item(
-            Item={
-                "PK": user_id,
-                "SK": org_id,
-                "role": "OWNER",
-                "created_at": now,
-            },
-            ConditionExpression="attribute_not_exists(PK)",
-        )
-        logger.info(
-            "auto-provisioned personal org for federated user user_id=%s org_id=%s",
-            user_id,
-            org_id,
-        )
-        return {"org_id": org_id, "role": "OWNER"}
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            # A parallel invocation already wrote the row — re-query to pick
-            # up the real org_id instead of the throwaway one we generated.
-            logger.info(
-                "race: membership already exists for user_id=%s; re-querying",
-                user_id,
-            )
-            existing = _fetch_memberships(user_id)
-            if existing:
-                return existing[0]
-            # Extremely unlikely — log and fall back gracefully.
-            logger.error("membership still missing after race for user_id=%s", user_id)
-            return {"org_id": org_id, "role": "OWNER"}
-        raise
+def _provision_via_api(user_id: str) -> dict[str, str] | None:
+    result = provision_signup(user_id)
+    if not result:
+        return None
+    tenant_id = str(result.get("tenantId", ""))
+    org_id = str(result.get("orgId", ""))
+    if not tenant_id or not org_id:
+        return None
+    return {
+        "tenant_id": tenant_id,
+        "org_id": org_id,
+        "role": str(result.get("membershipRole", "OWNER")),
+    }
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    """Pre-token-generation V2 entrypoint.
-
-    We do NOT raise on DDB errors — a failed membership lookup should NOT
-    deny the user a token. Better to log in with empty memberships and
-    let the app surface a "no orgs found" state than to fail auth entirely.
-    """
     trigger = event.get("triggerSource", "")
     user_id = event["request"]["userAttributes"].get("sub")
 
-    logger.info(
-        "pre_token_generation trigger=%s user_id=%s",
-        trigger,
-        user_id,
-    )
+    logger.info("pre_token_generation trigger=%s user_id=%s", trigger, user_id)
 
     if not user_id:
         logger.error("missing sub claim in request; returning event unchanged")
@@ -158,57 +105,49 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     try:
         memberships = _fetch_memberships(user_id)
     except Exception:
-        # Log full traceback to CloudWatch but don't fail auth.
         logger.exception("failed to fetch memberships for user_id=%s", user_id)
         memberships = []
 
-    # Auto-provision a personal org for social/federated users (e.g. Google
-    # OAuth) whose post_confirmation trigger never fires, leaving them with
-    # no membership rows and causing uploads to land in the "default" tenant.
     if not memberships:
         try:
-            new_membership = _provision_personal_org(user_id)
-            memberships = [new_membership]
+            provisioned = _provision_via_api(user_id)
+            if provisioned:
+                memberships = [provisioned]
         except Exception:
-            logger.exception(
-                "failed to auto-provision personal org for user_id=%s; "
-                "token will have empty memberships",
-                user_id,
-            )
+            logger.exception("failed to auto-provision user_id=%s", user_id)
 
-    primary_org_id = memberships[0]["org_id"] if memberships else None
+    primary = memberships[0] if memberships else {}
+    primary_org_id = primary.get("org_id")
+    primary_tenant_id = primary.get("tenant_id")
 
     logger.info(
-        "injecting membership claims user_id=%s primary_org_id=%s count=%d",
+        "injecting membership claims user_id=%s tenant_id=%s org_id=%s count=%d",
         user_id,
+        primary_tenant_id,
         primary_org_id,
         len(memberships),
     )
 
-    # ID token: SPA reads org_memberships as a JSON array.
     id_claims: dict[str, Any] = {"org_memberships": memberships}
-    if primary_org_id is not None:
-        id_claims["primary_org_id"] = primary_org_id
-
-    # Access token: API Gateway authorizer validates this token. Emit only
-    # string-safe claims (array claims are dropped silently by Cognito in
-    # practice — primary_org_id never lands and tenant falls back to default).
     access_claims: dict[str, Any] = {}
-    if primary_org_id is not None:
+
+    if primary_org_id:
+        id_claims["org_id"] = primary_org_id
+        access_claims["org_id"] = primary_org_id
+        id_claims["primary_org_id"] = primary_org_id
         access_claims["primary_org_id"] = primary_org_id
+
+    if primary_tenant_id:
+        id_claims["tenant_id"] = primary_tenant_id
+        access_claims["tenant_id"] = primary_tenant_id
+
     if memberships:
         access_claims["org_memberships"] = json.dumps(memberships)
 
     event["response"] = {
         "claimsAndScopeOverrideDetails": {
-            "idTokenGeneration": {
-                "claimsToAddOrOverride": id_claims,
-            },
-            "accessTokenGeneration": {
-                "claimsToAddOrOverride": access_claims,
-            },
+            "idTokenGeneration": {"claimsToAddOrOverride": id_claims},
+            "accessTokenGeneration": {"claimsToAddOrOverride": access_claims},
         }
     }
-
-    logger.debug("response=%s", json.dumps(event["response"]))
     return event
