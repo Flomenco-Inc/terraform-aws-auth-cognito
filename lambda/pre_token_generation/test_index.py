@@ -155,3 +155,28 @@ class TestAutoProvision:
             claims = access_claims(run_handler([]))
         assert claims["org_id"] == "org_new"
         assert claims["tenant_id"] == "tenant_new"
+
+    def test_provisioning_failure_denies_the_token(self):
+        with patch.object(index, "_provision_via_api", return_value=None):
+            with patch.object(index, "_fetch_user_rows", return_value=[]):
+                with pytest.raises(RuntimeError, match="provisioning failed"):
+                    index.handler(make_event(), None)
+
+
+class TestByteBudgetUnits:
+    def test_budget_measures_utf8_bytes_not_code_points(self):
+        # Multi-byte team names: each char is 1 code point but 3 UTF-8 bytes,
+        # so a code-point count would stay under budget while bytes exceed it.
+        wide_permissions = ["資産:読取" * 200 for _ in range(4)]
+        rows = [
+            membership_row("org_a"),
+            {
+                "PK": "user-1",
+                "SK": "RESOLVED_PERMISSIONS#org_a",
+                "permissions": wide_permissions,
+            },
+        ]
+        result = run_handler(rows)
+        claims = access_claims(result)
+        assert "permissions" not in claims
+        assert claims["permissions_overflow"] == "true"
