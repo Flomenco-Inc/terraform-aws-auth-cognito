@@ -174,8 +174,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         # No rows is a legitimate first-login state (federated signup) —
         # auto-provision inline (Flo self-serve deviation from mlv2 FR-4).
         provisioned = _provision_via_api(user_id)
-        if provisioned:
-            memberships = [provisioned]
+        if not provisioned:
+            # Fail-closed: an org-less token must never be minted. Denying the
+            # login is recoverable (retry); an unscoped session is not.
+            raise RuntimeError(
+                f"pre_token_generation: no memberships and provisioning failed "
+                f"for user {user_id}"
+            )
+        memberships = [provisioned]
 
     # Active-org resolution: explicit ACTIVE_ORG selection (validated against
     # memberships — fail-safe if the user was since removed), else sole/primary.
@@ -241,7 +247,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     # Size guardrail: shed the permissions payload first; the authorizer falls
     # back to reading RESOLVED_PERMISSIONS from DynamoDB when the marker is set.
-    claims_size = len(json.dumps(access_claims))
+    claims_size = len(json.dumps(access_claims).encode("utf-8"))
     if claims_size > ACCESS_CLAIMS_BYTE_BUDGET and "permissions" in access_claims:
         logger.warning(
             "access claims %dB exceed budget %dB; dropping permissions claim",
@@ -252,6 +258,16 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         id_claims.pop("permissions", None)
         access_claims["permissions_overflow"] = "true"
         id_claims["permissions_overflow"] = "true"
+        claims_size = len(json.dumps(access_claims).encode("utf-8"))
+
+    if claims_size > ACCESS_CLAIMS_BYTE_BUDGET:
+        # org_memberships/teams alone exceed the budget — signal loudly; the
+        # memberships cap (MAX_MEMBERSHIPS_IN_CLAIMS) should make this rare.
+        logger.warning(
+            "access claims %dB still exceed budget %dB after shedding permissions",
+            claims_size,
+            ACCESS_CLAIMS_BYTE_BUDGET,
+        )
 
     event["response"] = {
         "claimsAndScopeOverrideDetails": {
