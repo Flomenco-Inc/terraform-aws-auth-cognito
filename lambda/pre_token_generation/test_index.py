@@ -19,10 +19,20 @@ sys.path.insert(0, os.path.dirname(__file__))
 import index  # noqa: E402
 
 
-def make_event(sub: str = "user-1") -> dict[str, Any]:
+def make_event(
+    sub: str = "user-1",
+    *,
+    email: str | None = "person@example.com",
+    email_verified: str | bool | None = "true",
+) -> dict[str, Any]:
+    attrs: dict[str, Any] = {"sub": sub}
+    if email is not None:
+        attrs["email"] = email
+    if email_verified is not None:
+        attrs["email_verified"] = email_verified
     return {
         "triggerSource": "TokenGeneration_Authentication",
-        "request": {"userAttributes": {"sub": sub}},
+        "request": {"userAttributes": attrs},
     }
 
 
@@ -161,6 +171,25 @@ class TestAutoProvision:
             with patch.object(index, "_fetch_user_rows", return_value=[]):
                 with pytest.raises(RuntimeError, match="provisioning failed"):
                     index.handler(make_event(), None)
+
+
+class TestAccessTokenEmailClaims:
+    def test_email_and_verified_copied_onto_access_token(self):
+        claims = access_claims(run_handler([membership_row("org_a")]))
+        assert claims["email"] == "person@example.com"
+        assert claims["email_verified"] == "true"
+
+    def test_email_verified_false_normalized(self):
+        event = make_event(email="a@b.co", email_verified="false")
+        claims = access_claims(run_handler([membership_row("org_a")], event=event))
+        assert claims["email"] == "a@b.co"
+        assert claims["email_verified"] == "false"
+
+    def test_missing_email_omits_email_claims(self):
+        event = make_event(email=None, email_verified=None)
+        claims = access_claims(run_handler([membership_row("org_a")], event=event))
+        assert "email" not in claims
+        assert "email_verified" not in claims
 
 
 class TestByteBudgetUnits:
