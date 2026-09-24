@@ -18,7 +18,14 @@ Safety contract: never raises an exception that would block sign-up. Linking
 failures are logged and the sign-up proceeds as normal (graceful degradation:
 the user gets a new federated identity without the org membership — still better
 than blocking them entirely).
+
+Ops note: if a duplicate Google_* user already exists alongside a native user for
+the same email, PreSignUp cannot merge them. Migrate memberships onto the native
+sub, AdminDeleteUser the Google_* user, then have the user sign in with Google
+again so this trigger re-links. See module README.
 """
+
+from __future__ import annotations
 
 import logging
 import os
@@ -30,7 +37,11 @@ from botocore.exceptions import ClientError
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
+METRIC_NAMESPACE = "Flo/Auth"
+METRIC_LINK_FAILURE = "PreSignUpAccountLinkFailure"
+
 _cognito: Any = None
+_cloudwatch: Any = None
 
 
 def _client() -> Any:
@@ -38,6 +49,34 @@ def _client() -> Any:
     if _cognito is None:
         _cognito = boto3.client("cognito-idp")
     return _cognito
+
+
+def _cw() -> Any:
+    global _cloudwatch
+    if _cloudwatch is None:
+        _cloudwatch = boto3.client("cloudwatch")
+    return _cloudwatch
+
+
+def _emit_link_failure_metric(provider_name: str, reason: str) -> None:
+    """Best-effort CloudWatch metric when linking fails but a native user exists."""
+    try:
+        _cw().put_metric_data(
+            Namespace=METRIC_NAMESPACE,
+            MetricData=[
+                {
+                    "MetricName": METRIC_LINK_FAILURE,
+                    "Value": 1.0,
+                    "Unit": "Count",
+                    "Dimensions": [
+                        {"Name": "Provider", "Value": provider_name or "unknown"},
+                        {"Name": "Reason", "Value": reason[:256] or "unknown"},
+                    ],
+                }
+            ],
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to emit %s metric", METRIC_LINK_FAILURE)
 
 
 def _find_native_user(user_pool_id: str, email: str) -> dict[str, Any] | None:
@@ -72,6 +111,11 @@ def _link_provider(user_pool_id: str, native_username: str, provider_name: str, 
     )
 
 
+def _is_email_verified(attrs: dict[str, str]) -> bool:
+    """True when the IdP asserts a verified email (Cognito uses string 'true')."""
+    return attrs.get("email_verified", "").lower() == "true"
+
+
 def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
     trigger: str = event.get("triggerSource", "")
 
@@ -85,9 +129,18 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
         logger.warning("PreSignUp trigger fired without userPoolId; skipping link")
         return event
 
-    email: str = event.get("request", {}).get("userAttributes", {}).get("email", "").strip()
+    attrs: dict[str, str] = event.get("request", {}).get("userAttributes", {}) or {}
+    email: str = (attrs.get("email") or "").strip()
     if not email:
         logger.warning("PreSignUp_ExternalProvider fired without an email attribute; skipping link")
+        return event
+
+    if not _is_email_verified(attrs):
+        logger.warning(
+            "PreSignUp_ExternalProvider email=%s is not verified; skipping link "
+            "(will not attach unverified IdP email to a native account)",
+            email,
+        )
         return event
 
     # event["userName"] is "<ProviderName>_<ProviderUserId>", e.g. "Google_1234567890"
@@ -98,6 +151,7 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
         return event
 
     provider_name, provider_user_id = parts[0], parts[1]
+    native_existed = False
 
     try:
         native = _find_native_user(user_pool_id, email)
@@ -109,6 +163,7 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             )
             return event
 
+        native_existed = True
         native_username = native["Username"]
         logger.info(
             "Linking %s identity to native user '%s' for email=%s",
@@ -126,8 +181,23 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             logger.info("Provider already linked for email=%s; no-op", email)
         else:
             # Log but do NOT re-raise — a linking failure must not block sign-in.
-            logger.exception("AdminLinkProviderForUser failed for email=%s: %s", email, exc)
-    except Exception:  # noqa: BLE001
-        logger.exception("Unexpected error during account linking for email=%s", email)
+            logger.error(
+                "AdminLinkProviderForUser failed for email=%s native_existed=%s: %s",
+                email,
+                native_existed,
+                exc,
+                exc_info=True,
+            )
+            if native_existed:
+                _emit_link_failure_metric(provider_name, code or "ClientError")
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Unexpected error during account linking for email=%s native_existed=%s",
+            email,
+            native_existed,
+            exc_info=True,
+        )
+        if native_existed:
+            _emit_link_failure_metric(provider_name, type(exc).__name__)
 
     return event

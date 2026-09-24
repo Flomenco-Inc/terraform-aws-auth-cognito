@@ -60,6 +60,26 @@ inputs = {
 }
 ```
 
+## Federated account linking (PreSignUp)
+
+When Google (or another IdP) signs in with an email that already belongs to a
+**native** Cognito user, the PreSignUp Lambda calls `AdminLinkProviderForUser`
+so both methods share one `sub`. Linking only runs when the IdP asserts
+`email_verified=true`. Failures are fail-open (signup continues) but log at
+error and emit CloudWatch metric `Flo/Auth` / `PreSignUpAccountLinkFailure`.
+
+### Runbook: duplicate `Google_*` + native same email
+
+If linking failed earlier (or Google signed up first), Cognito may already have
+both a native user and a `Google_<id>` user for the same email. PreSignUp cannot
+merge existing duplicates. Remediating:
+
+1. Treat the **native** Cognito user as the surviving identity.
+2. Copy org membership / `RESOLVED_PERMISSIONS#*` rows from the Google `sub`
+   onto the native `sub` (keep both orgs; do not merge tenants).
+3. `AdminDeleteUser` the `Google_*` user.
+4. Have the user sign in with Google again — PreSignUp re-links to native.
+
 ## Sequencing: enabling Google after first apply
 
 Google OAuth clients need the Cognito domain to exist before you can

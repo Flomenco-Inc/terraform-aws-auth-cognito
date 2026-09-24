@@ -77,6 +77,22 @@ data "aws_iam_policy_document" "pre_signup" {
     ]
     resources = ["arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/*"]
   }
+
+  # Emit PreSignUpAccountLinkFailure when a native user exists but linking fails
+  # (fail-open signup; metric surfaces silent duplicate-identity risk).
+  statement {
+    sid    = "EmitLinkFailureMetrics"
+    effect = "Allow"
+    actions = [
+      "cloudwatch:PutMetricData",
+    ]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "cloudwatch:namespace"
+      values   = ["Flo/Auth"]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "pre_signup" {
