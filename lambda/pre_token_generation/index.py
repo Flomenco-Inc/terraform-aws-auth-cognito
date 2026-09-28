@@ -218,20 +218,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     # skip this check — they are the required path.
     if not _is_enterprise_sso_user(event, user_attributes):
         email = user_attributes.get("email")
-        if isinstance(email, str) and email.strip():
-            enforced = discover_sso_enforced(email.strip())
-            if enforced is None:
-                raise RuntimeError(
-                    "SSO enforcement status unavailable; retry sign-in shortly"
-                )
-            if enforced:
-                logger.warning(
-                    "denying password/federated token for SSO-enforced email user_id=%s",
-                    user_id,
-                )
-                raise RuntimeError(
-                    "SSO is enforced for this email domain; sign in with your company SSO"
-                )
+        if isinstance(email, str) and email.strip() and discover_sso_enforced(email.strip()):
+            logger.warning(
+                "denying password/federated token for SSO-enforced email user_id=%s",
+                user_id,
+            )
+            raise RuntimeError(
+                "SSO is enforced for this email domain; sign in with your company SSO"
+            )
 
     # Fail-closed: a lookup failure raises and denies the token. Minting a
     # token with silently-empty memberships would either scope the user to

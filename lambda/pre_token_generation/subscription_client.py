@@ -77,16 +77,16 @@ def get_org_config(org_id: str) -> dict[str, Any] | None:
     return None
 
 
-def discover_sso_enforced(email: str) -> bool | None:
-    """Return whether the email domain requires enterprise SSO.
+def discover_sso_enforced(email: str) -> bool:
+    """True when discover authoritatively reports the domain requires SSO.
 
-    ``True`` / ``False`` from a successful discover response. ``None`` when
-    discover cannot be reached or returns a non-success payload — callers must
-    fail closed (deny token mint) rather than treating that as unenforced.
+    Transport / non-success responses return ``False`` (fail-open) so a brief
+    identity-service outage does not deny every password/Google token mint.
+    Callers still deny when this returns ``True``.
     """
     base = _base_url()
     if not base or not email or "@" not in email:
-        return None
+        return False
     data = json.dumps({"email": email}).encode("utf-8")
     req = urllib.request.Request(
         f"{base}/auth/sso/discover",
@@ -99,13 +99,13 @@ def discover_sso_enforced(email: str) -> bool | None:
             raw = resp.read().decode("utf-8")
             payload = json.loads(raw) if raw else {}
     except Exception:
-        logger.exception("SSO discover request failed for enforce check")
-        return None
+        logger.exception("SSO discover request failed for enforce check; fail-open")
+        return False
     if not isinstance(payload, dict) or payload.get("status") != "success":
-        return None
+        return False
     data_obj = payload.get("data")
     if not isinstance(data_obj, dict):
-        return None
+        return False
     return bool(data_obj.get("enforced") and data_obj.get("providerName"))
 
 
