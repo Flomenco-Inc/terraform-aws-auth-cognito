@@ -27,9 +27,12 @@ again so this trigger re-links. See module README.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import urllib.error
+import urllib.request
 from typing import Any
 
 import boto3
@@ -49,6 +52,44 @@ _ENTERPRISE_SSO_PROVIDER = re.compile(r"^sso[a-f0-9]{29}$")
 
 _cognito: Any = None
 _cloudwatch: Any = None
+
+
+def _subscription_api_url() -> str:
+    return os.environ.get("SUBSCRIPTION_API_URL", "").rstrip("/")
+
+
+def _enterprise_link_authorized(email: str, provider_name: str) -> bool:
+    """Only link enterprise IdPs when DNS-claimed IdP for the email matches.
+
+    Prevents a customer IdP from attaching itself to an arbitrary Flo native
+    account by asserting a verified email that belongs to another Tenant's user
+    outside the IdP's claimed domain registry.
+    """
+    base = _subscription_api_url()
+    if not base:
+        logger.warning("SUBSCRIPTION_API_URL unset; denying enterprise account link")
+        return False
+    data = json.dumps({"email": email, "purpose": "link"}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base}/auth/sso/discover",
+        data=data,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=3.0) as resp:  # noqa: S310
+            raw = resp.read().decode("utf-8")
+            payload = json.loads(raw) if raw else {}
+    except Exception:
+        logger.exception("SSO discover failed during enterprise link authorization")
+        return False
+    if not isinstance(payload, dict) or payload.get("status") != "success":
+        return False
+    data_obj = payload.get("data")
+    if not isinstance(data_obj, dict):
+        return False
+    claimed = data_obj.get("providerName")
+    return isinstance(claimed, str) and claimed == provider_name
 
 
 def _client() -> Any:
@@ -175,6 +216,19 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
 
     provider_name, provider_user_id = parsed
     native_existed = False
+
+    # Enterprise IdPs: only link when the email domain's DNS-claimed IdP matches
+    # this provider. Otherwise Cognito creates a distinct federated identity
+    # (invite-only / no-access) instead of attaching to an unrelated native sub.
+    if _ENTERPRISE_SSO_PROVIDER.match(provider_name):
+        if not _enterprise_link_authorized(email, provider_name):
+            logger.warning(
+                "Denying enterprise AdminLinkProviderForUser for email=%s provider=%s "
+                "(provider does not match DNS-claimed IdP for domain)",
+                email,
+                provider_name,
+            )
+            return event
 
     try:
         native = _find_native_user(user_pool_id, email)
