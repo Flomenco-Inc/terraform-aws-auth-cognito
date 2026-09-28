@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 import boto3
@@ -39,6 +40,12 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 METRIC_NAMESPACE = "Flo/Auth"
 METRIC_LINK_FAILURE = "PreSignUpAccountLinkFailure"
+
+# Cognito federated usernames: ProviderName_Subject. Enterprise Tenant IdPs use
+# provider names ``sso`` + 29 hex (no underscore) so split("_", 1) still works.
+_FEDERATED_PREFIXES = ("Google_", "Facebook_", "LoginWithAmazon_", "SignInWithApple_")
+_ENTERPRISE_SSO_USERNAME = re.compile(r"^sso[a-f0-9]{29}_")
+_ENTERPRISE_SSO_PROVIDER = re.compile(r"^sso[a-f0-9]{29}$")
 
 _cognito: Any = None
 _cloudwatch: Any = None
@@ -86,12 +93,27 @@ def _find_native_user(user_pool_id: str, email: str) -> dict[str, Any] | None:
         Filter=f'email = "{email}"',
         Limit=10,
     )
-    federated_prefixes = ("Google_", "Facebook_", "LoginWithAmazon_", "SignInWithApple_")
     for user in result.get("Users", []):
         username: str = user.get("Username", "")
-        if not any(username.startswith(p) for p in federated_prefixes):
-            return user
+        if any(username.startswith(p) for p in _FEDERATED_PREFIXES):
+            continue
+        if _ENTERPRISE_SSO_USERNAME.match(username):
+            continue
+        return user
     return None
+
+
+def _parse_provider(raw_username: str) -> tuple[str, str] | None:
+    """Return (providerName, providerUserId) from Cognito federated username."""
+    if _ENTERPRISE_SSO_USERNAME.match(raw_username):
+        provider_name = raw_username[:32]
+        provider_user_id = raw_username[33:]
+        if provider_user_id and _ENTERPRISE_SSO_PROVIDER.match(provider_name):
+            return provider_name, provider_user_id
+    parts = raw_username.split("_", 1)
+    if len(parts) != 2:
+        return None
+    return parts[0], parts[1]
 
 
 def _link_provider(user_pool_id: str, native_username: str, provider_name: str, provider_user_id: str) -> None:
@@ -144,13 +166,14 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
         return event
 
     # event["userName"] is "<ProviderName>_<ProviderUserId>", e.g. "Google_1234567890"
+    # or "sso{29hex}_{subject}" for Tenant Identity Providers.
     raw_username: str = event.get("userName", "")
-    parts = raw_username.split("_", 1)
-    if len(parts) != 2:
+    parsed = _parse_provider(raw_username)
+    if parsed is None:
         logger.warning("Unexpected userName format '%s'; skipping link", raw_username)
         return event
 
-    provider_name, provider_user_id = parts[0], parts[1]
+    provider_name, provider_user_id = parsed
     native_existed = False
 
     try:
