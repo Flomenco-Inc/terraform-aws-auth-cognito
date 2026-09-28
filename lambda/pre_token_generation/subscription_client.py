@@ -75,3 +75,35 @@ def get_org_config(org_id: str) -> dict[str, Any] | None:
         data = payload.get("data")
         return data if isinstance(data, dict) else None
     return None
+
+
+def discover_sso_enforced(email: str) -> bool:
+    """True when the email domain requires enterprise SSO (public discover).
+
+    Uses the same API Gateway base as subscription internals. Fail-open on
+    transport errors so Cognito outages do not lock every password login;
+    identity-service discover itself is fail-closed for unknown domains.
+    """
+    base = _base_url()
+    if not base or not email or "@" not in email:
+        return False
+    data = json.dumps({"email": email}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base}/auth/sso/discover",
+        data=data,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=3.0) as resp:  # noqa: S310
+            raw = resp.read().decode("utf-8")
+            payload = json.loads(raw) if raw else {}
+    except Exception:
+        logger.exception("SSO discover request failed for enforce check")
+        return False
+    if not isinstance(payload, dict) or payload.get("status") != "success":
+        return False
+    data_obj = payload.get("data")
+    if not isinstance(data_obj, dict):
+        return False
+    return bool(data_obj.get("enforced") and data_obj.get("providerName"))
