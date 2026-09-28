@@ -44,7 +44,7 @@ from typing import Any
 import boto3
 from boto3.dynamodb.conditions import Key
 
-from subscription_client import get_org_config, provision_signup
+from subscription_client import discover_sso_enforced, get_org_config, provision_signup
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 MEMBERSHIPS_TABLE = os.environ["MEMBERSHIPS_TABLE"]
@@ -223,6 +223,20 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     if not user_id:
         # Fail-closed: a token without a subject must not be enriched or minted.
         raise RuntimeError("pre_token_generation: missing sub in userAttributes")
+
+    # Hard Enforce: password/Google sessions for an Enforced domain must not mint
+    # tokens (except break-glass, which discover omits). Enterprise IdP logins
+    # skip this check — they are the required path.
+    if not _is_enterprise_sso_user(event, user_attributes):
+        email = user_attributes.get("email")
+        if isinstance(email, str) and email.strip() and discover_sso_enforced(email.strip()):
+            logger.warning(
+                "denying password/federated token for SSO-enforced email user_id=%s",
+                user_id,
+            )
+            raise RuntimeError(
+                "SSO is enforced for this email domain; sign in with your company SSO"
+            )
 
     # Fail-closed: a lookup failure raises and denies the token. Minting a
     # token with silently-empty memberships would either scope the user to
