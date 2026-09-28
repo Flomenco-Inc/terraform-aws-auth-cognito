@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any
 
 import boto3
@@ -184,6 +185,34 @@ def _email_claims_from_user_attributes(
     return claims
 
 
+def _is_enterprise_sso_user(event: dict[str, Any], user_attributes: dict[str, Any]) -> bool:
+    """True when the login is via a Tenant Identity Provider (provider name sso + 29 hex).
+
+    Invite-only enterprise SSO must not JIT a personal Tenant. Username shape is
+    ``sso{29hex}_{subject}``; identities JSON may also list the provider name.
+    """
+    username = str(event.get("userName") or "")
+    if re.match(r"^sso[a-f0-9]{29}_", username):
+        return True
+    if re.match(r"^sso[a-f0-9]{29}$", username):
+        return True
+
+    raw_identities = user_attributes.get("identities")
+    if isinstance(raw_identities, str) and raw_identities.strip():
+        try:
+            identities = json.loads(raw_identities)
+        except json.JSONDecodeError:
+            identities = []
+        if isinstance(identities, list):
+            for entry in identities:
+                if not isinstance(entry, dict):
+                    continue
+                provider = str(entry.get("providerName") or "")
+                if re.match(r"^sso[a-f0-9]{29}$", provider):
+                    return True
+    return False
+
+
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     trigger = event.get("triggerSource", "")
     user_attributes = event["request"]["userAttributes"]
@@ -202,17 +231,26 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     memberships = _memberships_from_rows(rows)
 
     if not memberships:
-        # No rows is a legitimate first-login state (federated signup) —
-        # auto-provision inline (Flo self-serve deviation from mlv2 FR-4).
-        provisioned = _provision_via_api(user_id)
-        if not provisioned:
-            # Fail-closed: an org-less token must never be minted. Denying the
-            # login is recoverable (retry); an unscoped session is not.
-            raise RuntimeError(
-                f"pre_token_generation: no memberships and provisioning failed "
-                f"for user {user_id}"
+        if _is_enterprise_sso_user(event, user_attributes):
+            # Enterprise IdP: invite-only. Mint an unscoped token so the SPA can
+            # show no-access; never JIT a personal Tenant.
+            logger.info(
+                "enterprise SSO user %s has no memberships; skipping personal-org provision",
+                user_id,
             )
-        memberships = [provisioned]
+            memberships = []
+        else:
+            # No rows is a legitimate first-login state (federated signup) —
+            # auto-provision inline (Flo self-serve deviation from mlv2 FR-4).
+            provisioned = _provision_via_api(user_id)
+            if not provisioned:
+                # Fail-closed: an org-less token must never be minted. Denying the
+                # login is recoverable (retry); an unscoped session is not.
+                raise RuntimeError(
+                    f"pre_token_generation: no memberships and provisioning failed "
+                    f"for user {user_id}"
+                )
+            memberships = [provisioned]
 
     # Active-org resolution: explicit ACTIVE_ORG selection (validated against
     # memberships — fail-safe if the user was since removed), else sole/primary.

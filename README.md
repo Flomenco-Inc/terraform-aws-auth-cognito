@@ -21,6 +21,12 @@ directly, no namespace parsing.
   domain if `custom_domain` + `custom_domain_certificate_arn` are set
 - `aws_cognito_identity_provider` for Google — conditional on
   `enable_google`
+- **Customer enterprise IdPs (SAML/OIDC)** are **not** managed in this
+  module. identity-service creates them at runtime on the shared pool
+  (`CreateIdentityProvider` / app-client updates). See flo-docs ADR
+  `0002-runtime-cognito-tenant-idps.md`. Provider names are `sso` + 29 hex.
+  Pre-token-generation skips personal-Tenant JIT for those providers
+  (invite-only). PreSignUp links them to native invitees by email.
 - `aws_dynamodb_table` `<name>-org-memberships` — PK `user_id`, SK
   `org_id`, GSI1 `org_id`/`user_id` for reverse lookups
 - `aws_lambda_function` pre-token-generation (Python 3.12, V2 trigger)
