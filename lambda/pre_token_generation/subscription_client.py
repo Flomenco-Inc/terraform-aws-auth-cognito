@@ -77,16 +77,16 @@ def get_org_config(org_id: str) -> dict[str, Any] | None:
     return None
 
 
-def discover_sso_enforced(email: str) -> bool:
-    """True when the email domain requires enterprise SSO (public discover).
+def discover_sso_enforced(email: str) -> bool | None:
+    """Return whether the email domain requires enterprise SSO.
 
-    Uses the same API Gateway base as subscription internals. Fail-open on
-    transport errors so Cognito outages do not lock every password login;
-    identity-service discover itself is fail-closed for unknown domains.
+    ``True`` / ``False`` from a successful discover response. ``None`` when
+    discover cannot be reached or returns a non-success payload — callers must
+    fail closed (deny token mint) rather than treating that as unenforced.
     """
     base = _base_url()
     if not base or not email or "@" not in email:
-        return False
+        return None
     data = json.dumps({"email": email}).encode("utf-8")
     req = urllib.request.Request(
         f"{base}/auth/sso/discover",
@@ -100,10 +100,42 @@ def discover_sso_enforced(email: str) -> bool:
             payload = json.loads(raw) if raw else {}
     except Exception:
         logger.exception("SSO discover request failed for enforce check")
-        return False
+        return None
     if not isinstance(payload, dict) or payload.get("status") != "success":
-        return False
+        return None
     data_obj = payload.get("data")
     if not isinstance(data_obj, dict):
-        return False
+        return None
     return bool(data_obj.get("enforced") and data_obj.get("providerName"))
+
+
+def discover_sso_provider_for_link(email: str) -> str | None:
+    """Return cognito providerName for a verified domain IdP, or None.
+
+    Used by PreSignUp enterprise linking: only link when the signing-in
+    provider matches the DNS-claimed IdP for the email domain.
+    """
+    base = _base_url()
+    if not base or not email or "@" not in email:
+        return None
+    data = json.dumps({"email": email, "purpose": "link"}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base}/auth/sso/discover",
+        data=data,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=3.0) as resp:  # noqa: S310
+            raw = resp.read().decode("utf-8")
+            payload = json.loads(raw) if raw else {}
+    except Exception:
+        logger.exception("SSO discover request failed for link authorization")
+        return None
+    if not isinstance(payload, dict) or payload.get("status") != "success":
+        return None
+    data_obj = payload.get("data")
+    if not isinstance(data_obj, dict):
+        return None
+    name = data_obj.get("providerName")
+    return name if isinstance(name, str) and name else None

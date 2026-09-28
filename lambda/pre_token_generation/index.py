@@ -186,30 +186,19 @@ def _email_claims_from_user_attributes(
 
 
 def _is_enterprise_sso_user(event: dict[str, Any], user_attributes: dict[str, Any]) -> bool:
-    """True when the login is via a Tenant Identity Provider (provider name sso + 29 hex).
+    """True when *this* authentication is via a Tenant Identity Provider.
 
-    Invite-only enterprise SSO must not JIT a personal Tenant. Username shape is
-    ``sso{29hex}_{subject}``; identities JSON may also list the provider name.
+    Prefer ``userName`` (``sso{29hex}_…``) — that is the current sign-in
+    identity. Do **not** scan the ``identities`` attribute: a native/Google
+    user who was previously linked to an enterprise IdP still lists that
+    provider in ``identities``, which would incorrectly skip Google JIT.
     """
+    del user_attributes  # reserved for signature stability with call sites
     username = str(event.get("userName") or "")
     if re.match(r"^sso[a-f0-9]{29}_", username):
         return True
     if re.match(r"^sso[a-f0-9]{29}$", username):
         return True
-
-    raw_identities = user_attributes.get("identities")
-    if isinstance(raw_identities, str) and raw_identities.strip():
-        try:
-            identities = json.loads(raw_identities)
-        except json.JSONDecodeError:
-            identities = []
-        if isinstance(identities, list):
-            for entry in identities:
-                if not isinstance(entry, dict):
-                    continue
-                provider = str(entry.get("providerName") or "")
-                if re.match(r"^sso[a-f0-9]{29}$", provider):
-                    return True
     return False
 
 
@@ -229,14 +218,20 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     # skip this check — they are the required path.
     if not _is_enterprise_sso_user(event, user_attributes):
         email = user_attributes.get("email")
-        if isinstance(email, str) and email.strip() and discover_sso_enforced(email.strip()):
-            logger.warning(
-                "denying password/federated token for SSO-enforced email user_id=%s",
-                user_id,
-            )
-            raise RuntimeError(
-                "SSO is enforced for this email domain; sign in with your company SSO"
-            )
+        if isinstance(email, str) and email.strip():
+            enforced = discover_sso_enforced(email.strip())
+            if enforced is None:
+                raise RuntimeError(
+                    "SSO enforcement status unavailable; retry sign-in shortly"
+                )
+            if enforced:
+                logger.warning(
+                    "denying password/federated token for SSO-enforced email user_id=%s",
+                    user_id,
+                )
+                raise RuntimeError(
+                    "SSO is enforced for this email domain; sign in with your company SSO"
+                )
 
     # Fail-closed: a lookup failure raises and denies the token. Minting a
     # token with silently-empty memberships would either scope the user to

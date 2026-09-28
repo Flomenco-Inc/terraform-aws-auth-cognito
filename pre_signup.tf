@@ -124,7 +124,8 @@ resource "aws_lambda_function" "pre_signup" {
       # carries event["userPoolId"] at runtime, so injecting it as an env var
       # would create a Terraform cycle (user_pool → lambda → user_pool).
       # The Lambda reads it from the event instead.
-      LOG_LEVEL = "INFO"
+      LOG_LEVEL            = "INFO"
+      SUBSCRIPTION_API_URL = var.subscription_api_url
     }
   }
 
