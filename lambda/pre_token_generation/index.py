@@ -44,7 +44,12 @@ from typing import Any
 import boto3
 from boto3.dynamodb.conditions import Key
 
-from subscription_client import discover_sso_enforced, get_org_config, provision_signup
+from subscription_client import (
+    discover_sso_enforced,
+    discover_sso_provider_for_link,
+    get_org_config,
+    provision_signup,
+)
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 MEMBERSHIPS_TABLE = os.environ["MEMBERSHIPS_TABLE"]
@@ -263,22 +268,19 @@ def _has_social_identity(user_attributes: dict[str, Any]) -> bool:
 def _bypass_sso_enforce(event: dict[str, Any], user_attributes: dict[str, Any]) -> bool:
     """Allow token mint for enterprise SSO (or machine) under domain Enforce.
 
-    Long-term model: never treat ``Google_*`` + linked Okta as an Enforce
-    bypass while Google remains linked — that let Continue-with-Google mint
-    tokens after Enforce. After Enforce unlinks social IdPs, Hosted UI /
-    refresh for a destination user that only has the enterprise IdP left is
-    allowed so Okta→native (or Okta after Google unlink) keeps working.
+    Flo password uses ``TokenGeneration_Authentication`` / refresh — not Hosted
+    UI password. Linked-enterprise bypass is therefore limited to
+    ``TokenGeneration_HostedAuth`` (OAuth authorize with ``identity_provider``)
+    after social IdPs were unlinked on Enforce. Refresh of an old password
+    session must still hit ``discover_sso_enforced`` and be denied.
     """
     if _is_enterprise_sso_user(event, user_attributes):
         return True
     if _is_machine_service_user(user_attributes):
         return True
     trigger = str(event.get("triggerSource") or "")
-    if trigger not in {
-        "TokenGeneration_HostedAuth",
-        "TokenGeneration_AuthenticateDevice",
-        "TokenGeneration_RefreshTokens",
-    }:
+    # HostedAuth only — not RefreshTokens / AuthenticateDevice (password sessions).
+    if trigger != "TokenGeneration_HostedAuth":
         return False
     if not _has_linked_enterprise_idp(user_attributes):
         return False
@@ -288,8 +290,27 @@ def _bypass_sso_enforce(event: dict[str, Any], user_attributes: dict[str, Any]) 
     return True
 
 
+def _email_verified(user_attributes: dict[str, Any]) -> bool:
+    raw = user_attributes.get("email_verified")
+    if raw is True:
+        return True
+    if isinstance(raw, str) and raw.strip().lower() in {"true", "1", "yes"}:
+        return True
+    return False
+
+
+def _enterprise_provider_from_username(event: dict[str, Any]) -> str | None:
+    username = str(event.get("userName") or "")
+    m = re.match(r"^(sso[a-f0-9]{29})_", username)
+    if m:
+        return m.group(1)
+    if re.match(r"^sso[a-f0-9]{29}$", username):
+        return username
+    return None
+
+
 def _cognito_subs_for_email(user_pool_id: str, email: str, exclude_sub: str) -> list[str]:
-    """Other Cognito ``sub`` values that share this email (Google / native peers)."""
+    """Other Cognito ``sub`` values that share this verified email."""
     if not user_pool_id or not email or "@" not in email:
         return []
     try:
@@ -310,7 +331,13 @@ def _cognito_subs_for_email(user_pool_id: str, email: str, exclude_sub: str) -> 
             if isinstance(a, dict)
         }
         peer_sub = attrs.get("sub")
-        if isinstance(peer_sub, str) and peer_sub and peer_sub != exclude_sub:
+        verified = str(attrs.get("email_verified") or "").lower() in {"true", "1", "yes"}
+        if (
+            isinstance(peer_sub, str)
+            and peer_sub
+            and peer_sub != exclude_sub
+            and verified
+        ):
             subs.append(peer_sub)
     return subs
 
@@ -392,7 +419,20 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             # Adopt invite memberships from the email peer (usually Google_*).
             email = user_attributes.get("email")
             pool_id = str(event.get("userPoolId") or "")
-            if isinstance(email, str) and email.strip() and pool_id:
+            provider = _enterprise_provider_from_username(event)
+            claimed = (
+                discover_sso_provider_for_link(email.strip())
+                if isinstance(email, str) and email.strip()
+                else None
+            )
+            if (
+                isinstance(email, str)
+                and email.strip()
+                and pool_id
+                and _email_verified(user_attributes)
+                and provider
+                and claimed == provider
+            ):
                 peer_subs = _cognito_subs_for_email(pool_id, email.strip(), user_id)
                 if peer_subs:
                     adopted = _adopt_memberships_from_peers(user_id, peer_subs)
