@@ -85,6 +85,19 @@ data "aws_iam_policy_document" "pre_token_generation" {
       aws_dynamodb_table.memberships.arn,
     ]
   }
+
+  # Adopt invite memberships onto a new enterprise sso_* sub by finding
+  # Google/native peers that share the same verified email.
+  statement {
+    sid    = "ListUsersForSsoMembershipAdopt"
+    effect = "Allow"
+    actions = [
+      "cognito-idp:ListUsers",
+    ]
+    resources = [
+      aws_cognito_user_pool.this.arn,
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "pre_token_generation" {

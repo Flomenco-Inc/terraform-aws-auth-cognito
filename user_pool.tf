@@ -200,6 +200,12 @@ resource "aws_cognito_user_pool_client" "spa" {
   # invalidated server-side via RevokeToken.
   enable_token_revocation = true
 
+  # Runtime Tenant SSO (ADR 0002) appends per-tenant IdP names to this list
+  # via identity-service. Terraform must not wipe those on every auth apply.
+  lifecycle {
+    ignore_changes = [supported_identity_providers]
+  }
+
   # The Google IdP must exist before the client references it — Terraform
   # infers this from the supported_identity_providers list, but making
   # the dependency explicit avoids create-time race conditions.
