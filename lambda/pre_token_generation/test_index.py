@@ -274,9 +274,21 @@ class TestSsoEnforceBypass:
         assert claims["org_id"] == "org_a"
 
 
-    def test_refresh_tokens_denied_even_when_enterprise_linked(self):
+    def test_refresh_tokens_allowed_when_enterprise_linked_no_social(self):
         event = make_event(email="ryan@flomenco.com")
         event["triggerSource"] = "TokenGeneration_RefreshTokens"
+        event["userName"] = "native-uuid"
+        event["request"]["userAttributes"]["identities"] = _identities_json(
+            ("ssod2294fa97c10ce68df76d3530206c", "OIDC"),
+        )
+        with patch.object(index, "discover_sso_enforced", return_value=True) as discover:
+            claims = access_claims(run_handler([membership_row("org_a")], event=event))
+        discover.assert_not_called()
+        assert claims["org_id"] == "org_a"
+
+    def test_password_authentication_denied_even_when_enterprise_linked(self):
+        event = make_event(email="ryan@flomenco.com")
+        event["triggerSource"] = "TokenGeneration_Authentication"
         event["userName"] = "native-uuid"
         event["request"]["userAttributes"]["identities"] = _identities_json(
             ("ssod2294fa97c10ce68df76d3530206c", "OIDC"),
