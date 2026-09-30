@@ -268,19 +268,24 @@ def _has_social_identity(user_attributes: dict[str, Any]) -> bool:
 def _bypass_sso_enforce(event: dict[str, Any], user_attributes: dict[str, Any]) -> bool:
     """Allow token mint for enterprise SSO (or machine) under domain Enforce.
 
-    Flo password uses ``TokenGeneration_Authentication`` / refresh — not Hosted
-    UI password. Linked-enterprise bypass is therefore limited to
-    ``TokenGeneration_HostedAuth`` (OAuth authorize with ``identity_provider``)
-    after social IdPs were unlinked on Enforce. Refresh of an old password
-    session must still hit ``discover_sso_enforced`` and be denied.
+    Flo SPA password uses ``TokenGeneration_Authentication`` (denied here).
+    Okta Hosted UI lands on a destination that may still be a native username
+    with a linked enterprise IdP; refreshes use ``TokenGeneration_RefreshTokens``.
+    Enforce GlobalSignOut of enterprise-linked natives kills stale password
+    refresh cookies at cutover. Residual Hosted UI *password* on that same
+    profile is gated by SPA discover (tech-debt for direct Hosted UI).
     """
     if _is_enterprise_sso_user(event, user_attributes):
         return True
     if _is_machine_service_user(user_attributes):
         return True
     trigger = str(event.get("triggerSource") or "")
-    # HostedAuth only — not RefreshTokens / AuthenticateDevice (password sessions).
-    if trigger != "TokenGeneration_HostedAuth":
+    # HostedAuth (OAuth) + RefreshTokens for Okta sessions. Not Authentication
+    # (SPA password SRP) and not AuthenticateDevice.
+    if trigger not in {
+        "TokenGeneration_HostedAuth",
+        "TokenGeneration_RefreshTokens",
+    }:
         return False
     if not _has_linked_enterprise_idp(user_attributes):
         return False
