@@ -202,6 +202,159 @@ def _is_enterprise_sso_user(event: dict[str, Any], user_attributes: dict[str, An
     return False
 
 
+_ENTERPRISE_SSO_PROVIDER = re.compile(r"^sso[a-f0-9]{29}$")
+_SOCIAL_PROVIDER_NAMES = frozenset(
+    {"Google", "Facebook", "LoginWithAmazon", "SignInWithApple"}
+)
+
+# Cognito service accounts that must keep USER_PASSWORD_AUTH for machine JWTs
+# (workflow flo-api-action, etc.). Domain Enforce must not block these.
+_DEFAULT_SSO_ENFORCE_EXEMPT_EMAILS = frozenset(
+    {
+        "pipeline-service@flomenco.com",
+    }
+)
+
+
+def _sso_enforce_exempt_emails() -> frozenset[str]:
+    raw = (os.environ.get("SSO_ENFORCE_EXEMPT_EMAILS") or "").strip()
+    extras = {e.strip().lower() for e in raw.split(",") if e.strip()}
+    return _DEFAULT_SSO_ENFORCE_EXEMPT_EMAILS | extras
+
+
+def _is_machine_service_user(user_attributes: dict[str, Any]) -> bool:
+    email = user_attributes.get("email")
+    if not isinstance(email, str) or not email.strip():
+        return False
+    return email.strip().lower() in _sso_enforce_exempt_emails()
+
+
+def _parse_identities(user_attributes: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = user_attributes.get("identities")
+    if not raw:
+        return []
+    try:
+        identities = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(identities, list):
+        return []
+    return [i for i in identities if isinstance(i, dict)]
+
+
+def _has_linked_enterprise_idp(user_attributes: dict[str, Any]) -> bool:
+    """True when the Cognito user has an AdminLink'd Tenant IdP identity."""
+    for identity in _parse_identities(user_attributes):
+        name = str(identity.get("providerName") or "")
+        if _ENTERPRISE_SSO_PROVIDER.match(name):
+            return True
+    return False
+
+
+def _has_social_identity(user_attributes: dict[str, Any]) -> bool:
+    """True when Google (or other social) is still linked on this user."""
+    for identity in _parse_identities(user_attributes):
+        name = str(identity.get("providerName") or "")
+        if name in _SOCIAL_PROVIDER_NAMES:
+            return True
+    return False
+
+
+def _bypass_sso_enforce(event: dict[str, Any], user_attributes: dict[str, Any]) -> bool:
+    """Allow token mint for enterprise SSO (or machine) under domain Enforce.
+
+    Long-term model: never treat ``Google_*`` + linked Okta as an Enforce
+    bypass while Google remains linked — that let Continue-with-Google mint
+    tokens after Enforce. After Enforce unlinks social IdPs, Hosted UI /
+    refresh for a destination user that only has the enterprise IdP left is
+    allowed so Okta→native (or Okta after Google unlink) keeps working.
+    """
+    if _is_enterprise_sso_user(event, user_attributes):
+        return True
+    if _is_machine_service_user(user_attributes):
+        return True
+    trigger = str(event.get("triggerSource") or "")
+    if trigger not in {
+        "TokenGeneration_HostedAuth",
+        "TokenGeneration_AuthenticateDevice",
+        "TokenGeneration_RefreshTokens",
+    }:
+        return False
+    if not _has_linked_enterprise_idp(user_attributes):
+        return False
+    # Social still linked ⇒ HostedAuth could be Google; deny (fall through).
+    if _has_social_identity(user_attributes):
+        return False
+    return True
+
+
+def _cognito_subs_for_email(user_pool_id: str, email: str, exclude_sub: str) -> list[str]:
+    """Other Cognito ``sub`` values that share this email (Google / native peers)."""
+    if not user_pool_id or not email or "@" not in email:
+        return []
+    try:
+        cognito = boto3.client("cognito-idp")
+        result = cognito.list_users(
+            UserPoolId=user_pool_id,
+            Filter=f'email = "{email}"',
+            Limit=10,
+        )
+    except Exception:
+        logger.exception("ListUsers failed during SSO membership adopt for %s", email)
+        return []
+    subs: list[str] = []
+    for user in result.get("Users") or []:
+        attrs = {
+            a.get("Name"): a.get("Value")
+            for a in (user.get("Attributes") or [])
+            if isinstance(a, dict)
+        }
+        peer_sub = attrs.get("sub")
+        if isinstance(peer_sub, str) and peer_sub and peer_sub != exclude_sub:
+            subs.append(peer_sub)
+    return subs
+
+
+def _adopt_memberships_from_peers(
+    user_id: str, peer_subs: list[str]
+) -> list[dict[str, Any]]:
+    """Copy membership / grants / ACTIVE_ORG from peer Cognito subs onto ``user_id``."""
+    adopted_rows: list[dict[str, Any]] = []
+    for peer_sub in peer_subs:
+        try:
+            peer_rows = _fetch_user_rows(peer_sub)
+        except Exception:
+            logger.exception("Failed reading memberships for peer sub %s", peer_sub)
+            continue
+        if not _memberships_from_rows(peer_rows):
+            continue
+        for item in peer_rows:
+            sk = item.get("SK")
+            if not isinstance(sk, str) or not sk:
+                continue
+            copy = dict(item)
+            copy["PK"] = user_id
+            try:
+                _table.put_item(Item=copy)
+                adopted_rows.append(copy)
+            except Exception:
+                logger.exception(
+                    "Failed adopting membership SK=%s from %s onto %s",
+                    sk,
+                    peer_sub,
+                    user_id,
+                )
+        if adopted_rows:
+            logger.info(
+                "adopted %d membership rows from peer %s onto enterprise user %s",
+                len(adopted_rows),
+                peer_sub,
+                user_id,
+            )
+            break
+    return adopted_rows
+
+
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     trigger = event.get("triggerSource", "")
     user_attributes = event["request"]["userAttributes"]
@@ -216,7 +369,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     # Hard Enforce: password/Google sessions for an Enforced domain must not mint
     # tokens (except break-glass, which discover omits). Enterprise IdP logins
     # skip this check — they are the required path.
-    if not _is_enterprise_sso_user(event, user_attributes):
+    if not _bypass_sso_enforce(event, user_attributes):
         email = user_attributes.get("email")
         if isinstance(email, str) and email.strip() and discover_sso_enforced(email.strip()):
             logger.warning(
@@ -235,13 +388,25 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     if not memberships:
         if _is_enterprise_sso_user(event, user_attributes):
-            # Enterprise IdP: invite-only. Mint an unscoped token so the SPA can
-            # show no-access; never JIT a personal Tenant.
-            logger.info(
-                "enterprise SSO user %s has no memberships; skipping personal-org provision",
-                user_id,
-            )
-            memberships = []
+            # Google-first users get a distinct sso_* sub on first Okta login.
+            # Adopt invite memberships from the email peer (usually Google_*).
+            email = user_attributes.get("email")
+            pool_id = str(event.get("userPoolId") or "")
+            if isinstance(email, str) and email.strip() and pool_id:
+                peer_subs = _cognito_subs_for_email(pool_id, email.strip(), user_id)
+                if peer_subs:
+                    adopted = _adopt_memberships_from_peers(user_id, peer_subs)
+                    if adopted:
+                        rows = _fetch_user_rows(user_id)
+                        memberships = _memberships_from_rows(rows)
+            if not memberships:
+                # Invite-only. Mint an unscoped token so the SPA can show
+                # no-access; never JIT a personal Tenant.
+                logger.info(
+                    "enterprise SSO user %s has no memberships; skipping personal-org provision",
+                    user_id,
+                )
+                memberships = []
         else:
             # No rows is a legitimate first-login state (federated signup) —
             # auto-provision inline (Flo self-serve deviation from mlv2 FR-4).

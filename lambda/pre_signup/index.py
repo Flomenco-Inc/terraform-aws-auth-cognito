@@ -58,18 +58,14 @@ def _subscription_api_url() -> str:
     return os.environ.get("SUBSCRIPTION_API_URL", "").rstrip("/")
 
 
-def _enterprise_link_authorized(email: str, provider_name: str) -> bool:
-    """Only link enterprise IdPs when DNS-claimed IdP for the email matches.
-
-    Prevents a customer IdP from attaching itself to an arbitrary Flo native
-    account by asserting a verified email that belongs to another Tenant's user
-    outside the IdP's claimed domain registry.
-    """
+def _discover_payload(email: str, *, purpose: str | None = None) -> dict[str, Any] | None:
     base = _subscription_api_url()
     if not base:
-        logger.warning("SUBSCRIPTION_API_URL unset; denying enterprise account link")
-        return False
-    data = json.dumps({"email": email, "purpose": "link"}).encode("utf-8")
+        return None
+    body: dict[str, Any] = {"email": email}
+    if purpose:
+        body["purpose"] = purpose
+    data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         f"{base}/auth/sso/discover",
         data=data,
@@ -81,12 +77,39 @@ def _enterprise_link_authorized(email: str, provider_name: str) -> bool:
             raw = resp.read().decode("utf-8")
             payload = json.loads(raw) if raw else {}
     except Exception:
-        logger.exception("SSO discover failed during enterprise link authorization")
-        return False
+        logger.exception("SSO discover failed for email=%s purpose=%s", email, purpose)
+        return None
     if not isinstance(payload, dict) or payload.get("status") != "success":
-        return False
+        return None
     data_obj = payload.get("data")
-    if not isinstance(data_obj, dict):
+    return data_obj if isinstance(data_obj, dict) else None
+
+
+def _discover_sso_enforced(email: str) -> bool:
+    """True when public discover authoritatively reports domain Enforce.
+
+    Fail-open on transport errors so a brief identity outage does not brick
+    Google signup for non-SSO domains. When discover returns success+enforced,
+    social PreSignUp must fail closed.
+    """
+    data_obj = _discover_payload(email)
+    if not data_obj:
+        return False
+    return bool(data_obj.get("enforced") and data_obj.get("providerName"))
+
+
+def _enterprise_link_authorized(email: str, provider_name: str) -> bool:
+    """Only link enterprise IdPs when DNS-claimed IdP for the email matches.
+
+    Prevents a customer IdP from attaching itself to an arbitrary Flo native
+    account by asserting a verified email that belongs to another Tenant's user
+    outside the IdP's claimed domain registry.
+    """
+    if not _subscription_api_url():
+        logger.warning("SUBSCRIPTION_API_URL unset; denying enterprise account link")
+        return False
+    data_obj = _discover_payload(email, purpose="link")
+    if not data_obj:
         return False
     claimed = data_obj.get("providerName")
     return isinstance(claimed, str) and claimed == provider_name
@@ -216,11 +239,27 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
 
     provider_name, provider_user_id = parsed
     native_existed = False
+    is_enterprise = bool(_ENTERPRISE_SSO_PROVIDER.match(provider_name))
+    is_social = any(raw_username.startswith(p) for p in _FEDERATED_PREFIXES)
+
+    # Hard Enforce: block first-time Google (social) federation for SSO domains.
+    # Returning Google users are denied in PreToken; this closes the PreSignUp path.
+    if is_social and _discover_sso_enforced(email):
+        logger.warning(
+            "Rejecting social PreSignUp for SSO-enforced email=%s provider=%s",
+            email,
+            provider_name,
+        )
+        raise RuntimeError(
+            "SSO is enforced for this email domain; sign in with your company SSO"
+        )
 
     # Enterprise IdPs: only link when the email domain's DNS-claimed IdP matches
     # this provider. Otherwise Cognito creates a distinct federated identity
     # (invite-only / no-access) instead of attaching to an unrelated native sub.
-    if _ENTERPRISE_SSO_PROVIDER.match(provider_name):
+    # Never AdminLink enterprise onto a Google_* destination — that made
+    # HostedAuth Google and Okta indistinguishable under Enforce.
+    if is_enterprise:
         if not _enterprise_link_authorized(email, provider_name):
             logger.warning(
                 "Denying enterprise AdminLinkProviderForUser for email=%s provider=%s "

@@ -209,3 +209,66 @@ class TestByteBudgetUnits:
         claims = access_claims(result)
         assert "permissions" not in claims
         assert claims["permissions_overflow"] == "true"
+
+
+def _identities_json(*providers: tuple[str, str]) -> str:
+    items = []
+    for i, (name, ptype) in enumerate(providers):
+        items.append(
+            {
+                "dateCreated": str(1_700_000_000_000 + i),
+                "userId": f"id-{i}",
+                "providerName": name,
+                "providerType": ptype,
+                "issuer": None,
+                "primary": "true" if i == 0 else "false",
+            }
+        )
+    return json.dumps(items)
+
+
+class TestSsoEnforceBypass:
+    def test_pipeline_service_email_bypasses_enforce(self):
+        event = make_event(email="pipeline-service@flomenco.com")
+        with patch.object(index, "discover_sso_enforced", return_value=True) as discover:
+            claims = access_claims(run_handler([membership_row("org_a")], event=event))
+        discover.assert_not_called()
+        assert claims["org_id"] == "org_a"
+
+    def test_human_enforced_email_still_denied(self):
+        event = make_event(email="ryan@flomenco.com")
+        with patch.object(index, "discover_sso_enforced", return_value=True):
+            with pytest.raises(RuntimeError, match="SSO is enforced"):
+                run_handler([membership_row("org_a")], event=event)
+
+    def test_google_hosted_auth_denied_while_social_still_linked(self):
+        event = make_event(email="ryan@flomenco.com")
+        event["triggerSource"] = "TokenGeneration_HostedAuth"
+        event["userName"] = "Google_117168582925268021715"
+        event["request"]["userAttributes"]["identities"] = _identities_json(
+            ("Google", "Google"),
+            ("ssod2294fa97c10ce68df76d3530206c", "OIDC"),
+        )
+        with patch.object(index, "discover_sso_enforced", return_value=True):
+            with pytest.raises(RuntimeError, match="SSO is enforced"):
+                run_handler([membership_row("org_a")], event=event)
+
+    def test_hosted_auth_allowed_after_social_unlinked(self):
+        event = make_event(email="ryan@flomenco.com")
+        event["triggerSource"] = "TokenGeneration_HostedAuth"
+        event["userName"] = "Google_117168582925268021715"
+        event["request"]["userAttributes"]["identities"] = _identities_json(
+            ("ssod2294fa97c10ce68df76d3530206c", "OIDC"),
+        )
+        with patch.object(index, "discover_sso_enforced", return_value=True) as discover:
+            claims = access_claims(run_handler([membership_row("org_a")], event=event))
+        discover.assert_not_called()
+        assert claims["org_id"] == "org_a"
+
+    def test_enterprise_username_bypasses_enforce(self):
+        event = make_event(email="ryan@flomenco.com")
+        event["userName"] = "ssod2294fa97c10ce68df76d3530206c_00u1ojo30auGV5Kjt1d8"
+        with patch.object(index, "discover_sso_enforced", return_value=True) as discover:
+            claims = access_claims(run_handler([membership_row("org_a")], event=event))
+        discover.assert_not_called()
+        assert claims["org_id"] == "org_a"
