@@ -3,6 +3,10 @@
 Cognito user pool sized for a B2B product: one pool, many orgs, rich JWT
 claims hydrated from DynamoDB on every token mint.
 
+**Agents:** see [`AGENTS.md`](./AGENTS.md) for Tenant SSO SPA IdP heal,
+PreToken merge-adopt, and PostConfirmation enterprise skip (do not use
+Terraform `local-exec` for IdP reconcile).
+
 **Why this exists**: vanilla Cognito has no "organization" concept — users
 are flat. This module layers a canonical org-memberships model on top
 using a DynamoDB table + a pre-token-generation V2 Lambda, so every
