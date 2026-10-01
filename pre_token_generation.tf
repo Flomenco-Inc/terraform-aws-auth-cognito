@@ -88,6 +88,9 @@ data "aws_iam_policy_document" "pre_token_generation" {
 
   # Adopt invite memberships onto a new enterprise sso_* sub by finding
   # Google/native peers that share the same verified email.
+  # Account+region scope (not pool ARN): user_pool depends on this Lambda,
+  # so referencing aws_cognito_user_pool.this.arn here cycles (same pattern
+  # as pre_signup AccountLinking).
   statement {
     sid    = "ListUsersForSsoMembershipAdopt"
     effect = "Allow"
@@ -95,7 +98,7 @@ data "aws_iam_policy_document" "pre_token_generation" {
       "cognito-idp:ListUsers",
     ]
     resources = [
-      aws_cognito_user_pool.this.arn,
+      "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/*",
     ]
   }
 }
