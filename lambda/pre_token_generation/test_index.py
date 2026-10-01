@@ -278,8 +278,18 @@ class TestSsoEnforceBypass:
         event = make_event(email="ryan@flomenco.com")
         event["triggerSource"] = "TokenGeneration_RefreshTokens"
         event["userName"] = "native-uuid"
-        event["request"]["userAttributes"]["identities"] = _identities_json(
-            ("ssod2294fa97c10ce68df76d3530206c", "OIDC"),
+        # Linked Okta on a native profile is non-primary in identities.
+        event["request"]["userAttributes"]["identities"] = json.dumps(
+            [
+                {
+                    "dateCreated": "1700000000000",
+                    "userId": "okta-sub",
+                    "providerName": "ssod2294fa97c10ce68df76d3530206c",
+                    "providerType": "OIDC",
+                    "issuer": None,
+                    "primary": "false",
+                }
+            ]
         )
         with patch.object(index, "discover_sso_enforced", return_value=True) as discover:
             claims = access_claims(run_handler([membership_row("org_a")], event=event))
@@ -290,9 +300,38 @@ class TestSsoEnforceBypass:
         event = make_event(email="ryan@flomenco.com")
         event["triggerSource"] = "TokenGeneration_Authentication"
         event["userName"] = "native-uuid"
-        event["request"]["userAttributes"]["identities"] = _identities_json(
-            ("ssod2294fa97c10ce68df76d3530206c", "OIDC"),
+        event["request"]["userAttributes"]["identities"] = json.dumps(
+            [
+                {
+                    "dateCreated": "1700000000000",
+                    "userId": "okta-sub",
+                    "providerName": "ssod2294fa97c10ce68df76d3530206c",
+                    "providerType": "OIDC",
+                    "issuer": None,
+                    "primary": "false",
+                }
+            ]
         )
         with patch.object(index, "discover_sso_enforced", return_value=True):
             with pytest.raises(RuntimeError, match="SSO is enforced"):
                 run_handler([membership_row("org_a")], event=event)
+
+    def test_uuid_username_with_primary_enterprise_identity_is_enterprise(self):
+        """HostedAuth sometimes passes sub UUID as userName — still enterprise."""
+        event = make_event(email="ryan@flomenco.com", email_verified="false")
+        event["triggerSource"] = "TokenGeneration_HostedAuth"
+        event["userName"] = "5448c418-60b1-70f1-db1c-c8559b43edd8"
+        event["request"]["userAttributes"]["identities"] = _identities_json(
+            ("ssod2294fa97c10ce68df76d3530206c", "OIDC"),
+        )
+        assert index._is_enterprise_sso_user(event, event["request"]["userAttributes"]) is True
+
+    def test_google_primary_with_linked_okta_is_not_enterprise(self):
+        event = make_event(email="ryan@flomenco.com")
+        event["userName"] = "Google_117168582925268021715"
+        event["request"]["userAttributes"]["identities"] = _identities_json(
+            ("Google", "Google"),
+            ("ssod2294fa97c10ce68df76d3530206c", "OIDC"),
+        )
+        assert index._is_enterprise_sso_user(event, event["request"]["userAttributes"]) is False
+
