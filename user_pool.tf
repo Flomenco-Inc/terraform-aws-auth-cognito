@@ -214,31 +214,8 @@ resource "aws_cognito_user_pool_client" "spa" {
   ]
 }
 
-
-#------------------------------------------------------------------------------
-# Reconcile runtime Tenant IdPs onto the SPA client after every meaningful
-# auth apply. lifecycle.ignore_changes prevents TF from wiping them; this
-# heals drift if something else called UpdateUserPoolClient without them.
-#------------------------------------------------------------------------------
-resource "terraform_data" "reconcile_spa_idps" {
-  input = {
-    pool_id      = aws_cognito_user_pool.this.id
-    client_id    = aws_cognito_user_pool_client.spa.id
-    pretoken     = aws_lambda_function.pre_token_generation.source_code_hash
-    script_sha   = filesha256("${path.module}/scripts/reconcile_spa_identity_providers.py")
-  }
-
-  depends_on = [
-    aws_cognito_user_pool_client.spa,
-    aws_lambda_function.pre_token_generation,
-  ]
-
-  provisioner "local-exec" {
-    interpreter = ["/bin/bash", "-c"]
-    command     = "python3 \"${path.module}/scripts/reconcile_spa_identity_providers.py\""
-    environment = {
-      COGNITO_USER_POOL_ID        = aws_cognito_user_pool.this.id
-      COGNITO_USER_POOL_CLIENT_ID = aws_cognito_user_pool_client.spa.id
-    }
-  }
-}
+# Runtime Tenant IdP heal/assert lives outside Terraform local-exec (dagger
+# apply images have no python3). Canonical script:
+#   scripts/reconcile_spa_identity_providers.py
+# Callers: flo-core-services apply-auth-leaf (post-apply) and flo
+# identity-service after every IdP upsert.

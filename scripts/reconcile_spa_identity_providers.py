@@ -3,8 +3,9 @@
 
 Terraform manages the SPA client baseline (COGNITO + Google) and uses
 lifecycle.ignore_changes on supported_identity_providers so applies do not
-wipe runtime IdPs. This script is the heal/assert path: after auth leaf
-apply (or from identity-service), re-attach any missing sso* providers.
+wipe runtime IdPs. This script is the heal/assert path — run from the auth
+leaf GHA step (post-apply) or identity-service after IdP upsert. Do not
+invoke via Terraform local-exec (apply containers may lack python3).
 
 Env:
   COGNITO_USER_POOL_ID
