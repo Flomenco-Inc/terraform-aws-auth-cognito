@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 from subscription_client import provision_signup
@@ -45,6 +46,17 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         return event
 
     logger.info("post_confirmation trigger=%s user_id=%s", trigger, user_id)
+
+    # Enterprise SSO destinations (sso{29hex}_…) must not get a personal Tenant —
+    # PreToken adopts memberships from the email peer (Google_*/native). JIT here
+    # races adopt and sends users to choose-a-plan with an empty wallet.
+    username = str(event.get("userName") or "")
+    if re.match(r"^sso[a-f0-9]{29}_", username):
+        logger.info(
+            "skipping personal-org provision for enterprise SSO user_id=%s",
+            user_id,
+        )
+        return event
 
     try:
         result = provision_signup(user_id, _display_name_from_event(event))

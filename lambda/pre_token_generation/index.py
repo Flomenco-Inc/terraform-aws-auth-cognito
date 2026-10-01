@@ -191,19 +191,32 @@ def _email_claims_from_user_attributes(
 
 
 def _is_enterprise_sso_user(event: dict[str, Any], user_attributes: dict[str, Any]) -> bool:
-    """True when *this* authentication is via a Tenant Identity Provider.
+    """True when *this* Cognito profile is an enterprise IdP destination.
 
-    Prefer ``userName`` (``sso{29hex}_…``) — that is the current sign-in
-    identity. Do **not** scan the ``identities`` attribute: a native/Google
-    user who was previously linked to an enterprise IdP still lists that
-    provider in ``identities``, which would incorrectly skip Google JIT.
+    Prefer ``userName`` / ``cognito:username`` (``sso{29hex}_…``). Also treat a
+    **primary** identity whose provider is ``sso{29hex}`` as enterprise — some
+    HostedAuth PreToken events pass the UUID ``sub`` as ``userName``, which
+    would otherwise fall through to personal-org provision and skip adopt.
+
+    Do **not** treat a non-primary linked enterprise IdP as enterprise: a
+    Google_* / native user may still list Okta in ``identities`` after linking.
     """
-    del user_attributes  # reserved for signature stability with call sites
-    username = str(event.get("userName") or "")
-    if re.match(r"^sso[a-f0-9]{29}_", username):
-        return True
-    if re.match(r"^sso[a-f0-9]{29}$", username):
-        return True
+    for candidate in (
+        str(event.get("userName") or ""),
+        str(user_attributes.get("cognito:username") or ""),
+    ):
+        if re.match(r"^sso[a-f0-9]{29}_", candidate):
+            return True
+        if re.match(r"^sso[a-f0-9]{29}$", candidate):
+            return True
+    for identity in _parse_identities(user_attributes):
+        primary = identity.get("primary")
+        is_primary = primary is True or str(primary).lower() in {"true", "1", "yes"}
+        if not is_primary:
+            continue
+        name = str(identity.get("providerName") or "")
+        if re.match(r"^sso[a-f0-9]{29}$", name):
+            return True
     return False
 
 
@@ -430,11 +443,12 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 if isinstance(email, str) and email.strip()
                 else None
             )
+            # Okta OIDC often leaves Cognito email_verified=false even when the
+            # IdP asserted email; peer Google/native must still be verified.
             if (
                 isinstance(email, str)
                 and email.strip()
                 and pool_id
-                and _email_verified(user_attributes)
                 and provider
                 and claimed == provider
             ):
