@@ -335,3 +335,49 @@ class TestSsoEnforceBypass:
         )
         assert index._is_enterprise_sso_user(event, event["request"]["userAttributes"]) is False
 
+    def test_enterprise_with_personal_org_still_merges_peer_memberships(self):
+        """PostConfirmation JIT must not block adopt from the Google peer."""
+        personal = membership_row(
+            "org_personal", role="OWNER", tenant_id="tenant_personal"
+        )
+        personal["PK"] = "sso-user"
+        peer_rows = [
+            membership_row("org_paid", role="OWNER", tenant_id="tenant_paid"),
+            {"PK": "google-peer", "SK": "ACTIVE_ORG", "org_id": "org_paid"},
+        ]
+        event = make_event(sub="sso-user", email="ryan@flomenco.com", email_verified="false")
+        event["triggerSource"] = "TokenGeneration_HostedAuth"
+        event["userPoolId"] = "us-east-1_test"
+        event["userName"] = "ssod2294fa97c10ce68df76d3530206c_okta1"
+        event["request"]["userAttributes"]["identities"] = _identities_json(
+            ("ssod2294fa97c10ce68df76d3530206c", "OIDC"),
+        )
+
+        fetch_calls = {"n": 0}
+
+        def fake_fetch(uid: str):
+            fetch_calls["n"] += 1
+            if uid == "sso-user":
+                # After adopt, handler re-fetches — return merged rows.
+                if fetch_calls["n"] == 1:
+                    return [personal]
+                return [
+                    personal,
+                    {**peer_rows[0], "PK": "sso-user"},
+                    {**peer_rows[1], "PK": "sso-user"},
+                ]
+            return peer_rows
+
+        with (
+            patch.object(index, "_fetch_user_rows", side_effect=fake_fetch),
+            patch.object(index, "discover_sso_provider_for_link", return_value="ssod2294fa97c10ce68df76d3530206c"),
+            patch.object(index, "_cognito_subs_for_email", return_value=["google-peer"]),
+            patch.object(index, "_adopt_memberships_from_peers", return_value=[{}]) as adopt,
+        ):
+            result = index.handler(event, None)
+
+        adopt.assert_called_once_with("sso-user", ["google-peer"])
+        claims = access_claims(result)
+        assert claims["org_id"] == "org_paid"
+        assert claims["tenant_id"] == "tenant_paid"
+

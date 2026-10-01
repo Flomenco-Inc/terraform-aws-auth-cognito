@@ -431,53 +431,55 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     rows = _fetch_user_rows(user_id)
     memberships = _memberships_from_rows(rows)
 
-    if not memberships:
-        if _is_enterprise_sso_user(event, user_attributes):
-            # Google-first users get a distinct sso_* sub on first Okta login.
-            # Adopt invite memberships from the email peer (usually Google_*).
-            email = user_attributes.get("email")
-            pool_id = str(event.get("userPoolId") or "")
-            provider = _enterprise_provider_from_username(event)
-            claimed = (
-                discover_sso_provider_for_link(email.strip())
-                if isinstance(email, str) and email.strip()
-                else None
+    if _is_enterprise_sso_user(event, user_attributes):
+        # Google-first users get a distinct sso_* sub on first Okta login.
+        # Always merge memberships from the verified email peer (usually
+        # Google_*). Do NOT gate on empty memberships: PostConfirmation may
+        # have raced a personal-org row, which previously skipped adopt and
+        # left the access token scoped to a plan-less org (choose-a-plan).
+        email = user_attributes.get("email")
+        pool_id = str(event.get("userPoolId") or "")
+        provider = _enterprise_provider_from_username(event)
+        claimed = (
+            discover_sso_provider_for_link(email.strip())
+            if isinstance(email, str) and email.strip()
+            else None
+        )
+        # Okta OIDC often leaves Cognito email_verified=false even when the
+        # IdP asserted email; peer Google/native must still be verified.
+        if (
+            isinstance(email, str)
+            and email.strip()
+            and pool_id
+            and provider
+            and claimed == provider
+        ):
+            peer_subs = _cognito_subs_for_email(pool_id, email.strip(), user_id)
+            if peer_subs:
+                adopted = _adopt_memberships_from_peers(user_id, peer_subs)
+                if adopted:
+                    rows = _fetch_user_rows(user_id)
+                    memberships = _memberships_from_rows(rows)
+        if not memberships:
+            # Invite-only. Mint an unscoped token so the SPA can show
+            # no-access; never JIT a personal Tenant.
+            logger.info(
+                "enterprise SSO user %s has no memberships; skipping personal-org provision",
+                user_id,
             )
-            # Okta OIDC often leaves Cognito email_verified=false even when the
-            # IdP asserted email; peer Google/native must still be verified.
-            if (
-                isinstance(email, str)
-                and email.strip()
-                and pool_id
-                and provider
-                and claimed == provider
-            ):
-                peer_subs = _cognito_subs_for_email(pool_id, email.strip(), user_id)
-                if peer_subs:
-                    adopted = _adopt_memberships_from_peers(user_id, peer_subs)
-                    if adopted:
-                        rows = _fetch_user_rows(user_id)
-                        memberships = _memberships_from_rows(rows)
-            if not memberships:
-                # Invite-only. Mint an unscoped token so the SPA can show
-                # no-access; never JIT a personal Tenant.
-                logger.info(
-                    "enterprise SSO user %s has no memberships; skipping personal-org provision",
-                    user_id,
-                )
-                memberships = []
-        else:
-            # No rows is a legitimate first-login state (federated signup) —
-            # auto-provision inline (Flo self-serve deviation from mlv2 FR-4).
-            provisioned = _provision_via_api(user_id)
-            if not provisioned:
-                # Fail-closed: an org-less token must never be minted. Denying the
-                # login is recoverable (retry); an unscoped session is not.
-                raise RuntimeError(
-                    f"pre_token_generation: no memberships and provisioning failed "
-                    f"for user {user_id}"
-                )
-            memberships = [provisioned]
+            memberships = []
+    elif not memberships:
+        # No rows is a legitimate first-login state (federated signup) —
+        # auto-provision inline (Flo self-serve deviation from mlv2 FR-4).
+        provisioned = _provision_via_api(user_id)
+        if not provisioned:
+            # Fail-closed: an org-less token must never be minted. Denying the
+            # login is recoverable (retry); an unscoped session is not.
+            raise RuntimeError(
+                f"pre_token_generation: no memberships and provisioning failed "
+                f"for user {user_id}"
+            )
+        memberships = [provisioned]
 
     # Active-org resolution: explicit ACTIVE_ORG selection (validated against
     # memberships — fail-safe if the user was since removed), else sole/primary.
