@@ -33,6 +33,22 @@ Unit tests: `lambda/pre_token_generation/test_index.py`,
 After hot-patching Lambdas in an env, run flo-core-services **apply auth leaf**
 so Terragrunt owns the deployed zip again.
 
+## Platform admins group (flo#2554)
+
+`platform_admins.tf` creates `flo-platform-admins` in every pool. The Flo
+custom authorizer maps that `cognito:groups` value to the platform-plane
+capabilities (`PLATFORM_ADMIN_GROUP_CAPABILITIES`); nothing else grants them.
+
+| Rule | Why |
+|------|-----|
+| Membership is only `var.platform_admin_usernames` (set per env leaf in flo-core-services) | A reviewed PR is the audit trail; console or CLI membership is drift nobody approved |
+| Do not rename the group | The authorizer matches the exact name |
+| Do not add `groupOverrideDetails` to PreToken | It would let Lambda code rewrite `cognito:groups`, the only source of platform grants |
+| Never grant `cognito-idp:AdminAddUserToGroup` to CI or app roles | Same reason; only the Terraform apply role adds members |
+
+Plan-only tests: `terraform init -backend=false && terraform test`
+(`tests/platform_admins.tftest.hcl`). Runbook: flo `docs/platform-admins.md`.
+
 ## Related
 
 - flo session: `docs/session-notes/2026-10-01-sso-enforce-okta-adopt-choose-plan.md`
