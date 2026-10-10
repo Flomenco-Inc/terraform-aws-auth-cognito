@@ -35,6 +35,9 @@ directly, no namespace parsing.
   `org_id`, GSI1 `org_id`/`user_id` for reverse lookups
 - `aws_lambda_function` pre-token-generation (Python 3.12, V2 trigger)
   with CloudWatch log group + least-privilege IAM
+- `aws_cognito_user_group` `flo-platform-admins` and one
+  `aws_cognito_user_in_group` per entry of `platform_admin_usernames`
+  (see [Platform admins](#platform-admins-flo2554))
 
 ## Usage (Terragrunt)
 
@@ -147,6 +150,30 @@ against that.
 | `hosted_ui_domain` | Frontend env var `VITE_COGNITO_DOMAIN` |
 | `oauth_authorize_url` / `oauth_token_url` / `oauth_logout_url` | Frontend OIDC client config |
 | `memberships_table_name` | Backend service that writes memberships (org creation, invite accept, role change) |
+| `platform_admin_group_name` | Informational: the group the Flo custom authorizer maps to platform capabilities |
+
+## Platform admins (flo#2554)
+
+Every pool gets a `flo-platform-admins` group. A Cognito JWT whose
+`cognito:groups` claim contains it gets exactly the platform-plane
+capabilities the Flo custom authorizer maps to the group
+(`PLATFORM_ADMIN_GROUP_CAPABILITIES` in
+`flo/services/custom-authorizer-service/src/permissions.py`, today
+`platform.catalog:read` and `platform.catalog:update`). Org roles,
+permission sets and API keys never grant them.
+
+- **Membership is `platform_admin_usernames` and nothing else.** Each env
+  leaf in flo-core-services (`envs/<env>/us-east-1/auth/terragrunt.hcl`) sets
+  the list explicitly: `[]` in stg/prd, only the QA principal in dev.
+- **Adding a person takes a PR with an approval** on flo-core-services, then
+  `apply auth leaf` for that env. Never add members in the console or with
+  `aws cognito-idp admin-add-user-to-group`.
+- List entries are Cognito usernames. A native user's email works; a
+  federated user needs its Cognito username (`Google_…`). The user must
+  already exist, or the apply fails on `AdminAddUserToGroup`.
+- Runbook: `flo/docs/platform-admins.md`.
+- Tests: `terraform init -backend=false && terraform test`
+  (`tests/platform_admins.tftest.hcl`, AWS provider mocked).
 
 ## Caller-owned provider
 

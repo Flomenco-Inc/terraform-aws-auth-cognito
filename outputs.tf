@@ -104,3 +104,12 @@ output "pre_token_generation_function_name" {
   description = "Name of the pre-token-generation Lambda. Useful for targeted log-tailing when debugging claims."
   value       = aws_lambda_function.pre_token_generation.function_name
 }
+
+#------------------------------------------------------------------------------
+# Platform admins (flo#2554)
+#------------------------------------------------------------------------------
+
+output "platform_admin_group_name" {
+  description = "Cognito group whose members hold the platform.* capabilities the Flo custom authorizer maps to it. Membership is var.platform_admin_usernames only."
+  value       = aws_cognito_user_group.platform_admins.name
+}

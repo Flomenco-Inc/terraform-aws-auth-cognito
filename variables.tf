@@ -265,3 +265,32 @@ variable "internal_provision_secret" {
   default     = ""
   sensitive   = true
 }
+
+#------------------------------------------------------------------------------
+# Platform admins (flo#2554) — see platform_admins.tf
+#------------------------------------------------------------------------------
+
+variable "platform_admin_usernames" {
+  description = <<-EOT
+    The complete, reviewed membership of the flo-platform-admins group: Cognito
+    usernames (a native user's email works; a federated user needs its Cognito
+    username, e.g. Google_123...). Each member gets the platform.* capabilities
+    the custom authorizer maps to the group. Keep it empty in stg/prd until a
+    person is approved through a PR; dev holds only the QA principal. The user
+    must already exist in the pool. Never manage membership outside this list.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = length(var.platform_admin_usernames) == length(distinct(var.platform_admin_usernames))
+    error_message = "platform_admin_usernames must not contain duplicates."
+  }
+
+  validation {
+    condition = alltrue([
+      for u in var.platform_admin_usernames : length(u) > 0 && u == trimspace(u)
+    ])
+    error_message = "platform_admin_usernames entries must be non-empty and have no surrounding whitespace."
+  }
+}
