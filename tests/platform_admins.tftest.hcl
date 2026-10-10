@@ -58,11 +58,21 @@ run "rejects_duplicate_usernames" {
   expect_failures = [var.platform_admin_usernames]
 }
 
-run "rejects_blank_or_padded_usernames" {
+run "rejects_padded_usernames" {
   command = plan
 
   variables {
     platform_admin_usernames = [" qa-platform-admin@floapp.co"]
+  }
+
+  expect_failures = [var.platform_admin_usernames]
+}
+
+run "rejects_blank_usernames" {
+  command = plan
+
+  variables {
+    platform_admin_usernames = [""]
   }
 
   expect_failures = [var.platform_admin_usernames]
