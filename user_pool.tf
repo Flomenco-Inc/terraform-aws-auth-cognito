@@ -96,9 +96,14 @@ resource "aws_cognito_user_pool" "this" {
     post_confirmation = aws_lambda_function.post_confirmation.arn
   }
 
-  # Custom attributes users can self-set. Intentionally minimal — the
-  # source of truth for org membership is the memberships DDB table, not
-  # a user attribute, because membership is many-to-many and mutable.
+  # Custom attributes. Intentionally minimal — the source of truth for org
+  # membership and role is the memberships DDB table, not a user attribute,
+  # because membership is many-to-many and mutable.
+  #
+  # Both are mutable, and Cognito can't change mutability or developer_only
+  # after creation, so the guard is the app client's write_attributes: no
+  # app client may list a custom:* attribute (flo#2571). Only server-side
+  # Admin* calls write them, and the Flo API never authorizes from them.
   schema {
     name                     = "primary_org_id"
     attribute_data_type      = "String"
@@ -158,6 +163,23 @@ resource "aws_cognito_user_pool_domain" "custom" {
 # No client secret (public client).
 #------------------------------------------------------------------------------
 
+locals {
+  # Attributes a signed-in user may change on their own profile with
+  # UpdateUserAttributes (the SPA holds aws.cognito.signin.user.admin).
+  #
+  # Leaving write_attributes unset lets users write every standard AND custom
+  # attribute, including custom:role and custom:primary_org_id (flo#2571).
+  # This list must never contain a custom:* attribute. It must contain every
+  # attribute an IdP maps (Google: email, given_name, family_name, picture;
+  # tenant SSO in identity-service cognito-idp.ts: email, name), or Cognito
+  # stops updating it on federated sign-in. email also covers the me-service
+  # email change (UpdateUserAttributes + VerifyUserAttribute).
+  #
+  # email_verified is mapped too, but no app client can list it: Cognito
+  # rejects it in WriteAttributes ("Invalid write attributes specified").
+  spa_write_attributes = ["email", "name", "given_name", "family_name", "picture"]
+}
+
 resource "aws_cognito_user_pool_client" "spa" {
   name         = "${local.name_prefix}-spa"
   user_pool_id = aws_cognito_user_pool.this.id
@@ -166,6 +188,10 @@ resource "aws_cognito_user_pool_client" "spa" {
 
   callback_urls = var.callback_urls
   logout_urls   = var.logout_urls
+
+  # read_attributes stays at the default: the SPA reads custom:role from the
+  # ID token for display only. The API authorizes from the memberships table.
+  write_attributes = local.spa_write_attributes
 
   allowed_oauth_flows                  = ["code"]
   allowed_oauth_flows_user_pool_client = true
@@ -204,6 +230,11 @@ resource "aws_cognito_user_pool_client" "spa" {
   # via identity-service. Terraform must not wipe those on every auth apply.
   lifecycle {
     ignore_changes = [supported_identity_providers]
+
+    precondition {
+      condition     = length([for a in local.spa_write_attributes : a if startswith(a, "custom:")]) == 0
+      error_message = "The SPA client must not let users write custom:* attributes (flo#2571)."
+    }
   }
 
   # The Google IdP must exist before the client references it — Terraform
