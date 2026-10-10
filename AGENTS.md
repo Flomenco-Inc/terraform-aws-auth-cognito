@@ -49,6 +49,23 @@ capabilities (`PLATFORM_ADMIN_GROUP_CAPABILITIES`); nothing else grants them.
 Plan-only tests: `terraform init -backend=false && terraform test`
 (`tests/platform_admins.tftest.hcl`). Runbook: flo `docs/platform-admins.md`.
 
+## SPA client attribute permissions (flo#2571)
+
+`aws_cognito_user_pool_client.spa` sets an explicit `write_attributes`
+(`local.spa_write_attributes`). Unset means users can self-write every
+attribute with `UpdateUserAttributes`, including `custom:role` /
+`custom:primary_org_id`.
+
+| Rule | Why |
+|------|-----|
+| Never list a `custom:*` attribute | Users would self-assign it; a precondition and `tests/spa_client_attributes.tftest.hcl` fail the plan |
+| Keep every IdP-mapped attribute (Google, identity-service `FIXED_ATTRIBUTE_MAPPING`) in the list | Cognito skips a mapped attribute the client can't write |
+| Never list `email_verified` | Cognito rejects it (`Invalid write attributes specified`) |
+| Leave `read_attributes` at the default | The SPA reads `custom:role` from the ID token for display |
+
+The identity-service and flo-core-services SPA IdP reconcilers copy
+`WriteAttributes` from `DescribeUserPoolClient`, so they keep this list.
+
 ## Related
 
 - flo session: `docs/session-notes/2026-10-01-sso-enforce-okta-adopt-choose-plan.md`
