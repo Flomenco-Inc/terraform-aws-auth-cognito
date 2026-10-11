@@ -231,9 +231,13 @@ resource "aws_cognito_user_pool_client" "spa" {
   lifecycle {
     ignore_changes = [supported_identity_providers]
 
-    precondition {
-      condition     = length([for a in local.spa_write_attributes : a if startswith(a, "custom:")]) == 0
-      error_message = "The SPA client must not let users write custom:* attributes (flo#2571)."
+    # Checks the value actually set on the client, not just the local.
+    postcondition {
+      condition = (
+        length(coalesce(self.write_attributes, [])) > 0 &&
+        length([for a in coalesce(self.write_attributes, []) : a if startswith(a, "custom:")]) == 0
+      )
+      error_message = "The SPA client must set write_attributes and must not let users write custom:* attributes (flo#2571)."
     }
   }
 
