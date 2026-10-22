@@ -29,9 +29,9 @@ variable "password_minimum_length" {
 }
 
 variable "password_require_symbols" {
-  description = "Require at least one symbol in passwords. Off by default — we require upper+lower+digits which is already strong, and symbols are the top cause of user friction without meaningful entropy gain at length >=12."
+  description = "Require at least one symbol in passwords. On by default so the pool rejects symbol-less passwords (CWE-521). Invite temporary passwords must include a symbol."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "mfa_configuration" {
