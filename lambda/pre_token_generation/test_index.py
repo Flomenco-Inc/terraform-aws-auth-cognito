@@ -174,19 +174,13 @@ class TestAutoProvision:
 
 
 class TestAccessTokenEmailClaims:
-    def test_email_and_verified_copied_onto_access_token(self):
+    def test_email_not_copied_onto_access_token(self):
         claims = access_claims(run_handler([membership_row("org_a")]))
-        assert claims["email"] == "person@example.com"
-        assert claims["email_verified"] == "true"
+        assert "email" not in claims
+        assert "email_verified" not in claims
 
-    def test_email_verified_false_normalized(self):
+    def test_email_verified_false_still_omitted_from_access_token(self):
         event = make_event(email="a@b.co", email_verified="false")
-        claims = access_claims(run_handler([membership_row("org_a")], event=event))
-        assert claims["email"] == "a@b.co"
-        assert claims["email_verified"] == "false"
-
-    def test_missing_email_omits_email_claims(self):
-        event = make_event(email=None, email_verified=None)
         claims = access_claims(run_handler([membership_row("org_a")], event=event))
         assert "email" not in claims
         assert "email_verified" not in claims

@@ -27,10 +27,11 @@ Claim size guardrail: access-token claims are budgeted; on overflow the
 permissions payload is dropped and `permissions_overflow` is set so the
 authorizer falls back to reading RESOLVED_PERMISSIONS from DynamoDB.
 
-Email on access tokens: Cognito puts `email` / `email_verified` on ID tokens
-by default but not on access tokens. The Flo SPA sends access tokens to the
-API (`getAccessToken()`), so JWT_ONLY routes that match invitee email
-(e.g. accept-invitation) must see those claims on the access token too.
+Email on access tokens: keep PII off client-visible access JWTs (VAPT /
+CWE-200). Cognito still emits `email` / `email_verified` on ID tokens for the
+SPA. JWT_ONLY routes that need invitee email (e.g. accept-invitation) resolve
+it server-side via Cognito admin APIs keyed by `sub`, not from access-token
+claims.
 """
 
 from __future__ import annotations
@@ -163,31 +164,6 @@ def _provision_via_api(user_id: str) -> dict[str, str] | None:
         "org_id": org_id,
         "role": str(result.get("membershipRole", "OWNER")),
     }
-
-
-def _email_claims_from_user_attributes(
-    user_attributes: dict[str, Any],
-) -> dict[str, str]:
-    """Copy Cognito standard email attrs onto access-token claim overrides.
-
-    ID tokens already carry these from Cognito; access tokens do not unless we
-    add them here. Values are always strings (API Gateway / Cognito claim map).
-    """
-    claims: dict[str, str] = {}
-    email = user_attributes.get("email")
-    if isinstance(email, str) and email.strip():
-        claims["email"] = email.strip()
-
-    raw_verified = user_attributes.get("email_verified")
-    if raw_verified is True or (
-        isinstance(raw_verified, str) and raw_verified.strip().lower() in {"true", "1", "yes"}
-    ):
-        claims["email_verified"] = "true"
-    elif raw_verified is False or (
-        isinstance(raw_verified, str) and raw_verified.strip().lower() in {"false", "0", "no"}
-    ):
-        claims["email_verified"] = "false"
-    return claims
 
 
 def _is_enterprise_sso_user(event: dict[str, Any], user_attributes: dict[str, Any]) -> bool:
@@ -519,9 +495,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     id_claims: dict[str, Any] = {"org_memberships": memberships}
     access_claims: dict[str, Any] = {}
-
-    # Access tokens lack Cognito's standard email claims unless overridden.
-    access_claims.update(_email_claims_from_user_attributes(user_attributes))
 
     if org_id:
         id_claims["org_id"] = org_id
