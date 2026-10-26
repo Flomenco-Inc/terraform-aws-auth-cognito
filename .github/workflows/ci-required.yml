@@ -1,0 +1,33 @@
+name: ci required
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  required:
+    name: ci / required
+    if: always()
+    needs: [verify, pre-commit, checkov, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate CI jobs
+        env:
+          VERIFY: ${{ needs.verify.result }}
+          PRECOMMIT: ${{ needs.pre-commit.result }}
+          CHECKOV: ${{ needs.checkov.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          set -eu
+          for pair in "Terraform verify:$VERIFY" "pre-commit:$PRECOMMIT" "Checkov:$CHECKOV" "test:$TEST"; do
+            name="${pair%%:*}"
+            r="${pair#*:}"
+            echo "$name => $r"
+            case "$r" in success|skipped) ;; *) echo "::error::$name failed ($r)"; exit 1 ;; esac
+          done
