@@ -1,0 +1,84 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+  # security-events: write — lets codeql-action/upload-sarif write to the
+  # code-scanning API. On private repos without GHAS the actual upload will
+  # still 403 (and is caught by continue-on-error below), but the permission
+  # grant is what lets GHAS "just work" the moment it's enabled.
+  security-events: write
+  # actions: read — upload-sarif calls the workflow-runs API to attach SARIF
+  # results to the triggering run and to compute fingerprints. Without this
+  # we get `Resource not accessible by integration` every run. Harmless
+  # permission (read-only metadata on workflow runs in the same repo).
+  actions: read
+
+# The three jobs below delegate all real work to the Flomenco-Inc/dagger-ci
+# module. That module is the single source of truth for tool versions
+# (Terraform, TFLint, terraform-docs, Checkov, Python) and the exact CI
+# commands each job runs. Bumping a tool version = one commit in dagger-ci +
+# a Renovate PR here that flips the module ref — no per-repo YAML churn.
+#
+# Job names are load-bearing: the Phase 1 branch protection rule references
+# them literally (Terraform verify / pre-commit / Checkov). Don't rename.
+
+jobs:
+  verify:
+    name: Terraform verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: "0.20.6"
+          module: github.com/Flomenco-Inc/dagger-ci@v0.1.1
+          call: terraform-verify --src=.
+
+  pre-commit:
+    name: pre-commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: "0.20.6"
+          module: github.com/Flomenco-Inc/dagger-ci@v0.1.1
+          call: pre-commit --src=.
+
+  checkov:
+    name: Checkov
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: "0.20.6"
+          module: github.com/Flomenco-Inc/dagger-ci@v0.1.1
+          # Chained `export --path=...` pulls Checkov's results_sarif.sarif out
+          # of the Dagger engine into the runner workspace so the next step can
+          # upload it to GitHub's code-scanning API. The Dagger function itself
+          # already runs in soft-fail mode (see dagger-ci main.go) so findings
+          # are surfaced via SARIF and don't block merges.
+          call: checkov --src=. export --path=./results_sarif.sarif
+
+      # Best-effort SARIF upload. Private repos without GitHub Advanced
+      # Security can't write to the code-scanning API; the CLI output above
+      # is the authoritative record. If GHAS is enabled later this just
+      # starts populating the Security tab with no further changes.
+      - name: Upload SARIF to GitHub Security tab
+        if: always() && hashFiles('results_sarif.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4.35.2
+        with:
+          sarif_file: results_sarif.sarif
+          category: checkov

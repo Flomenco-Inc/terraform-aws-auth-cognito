@@ -1,0 +1,65 @@
+name: terraform
+
+# Offline module checks: every provider is mocked in test-suite/*.tftest.hcl,
+# so no credentials or GitHub token are needed.
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    # The version flo-core-services applies with (TERRAFORM_VERSION in its
+    # workflows). Its leaves source this module as the ROOT module, so
+    # `terraform init` there parses root-level and tests/ *.tftest.hcl files:
+    # anything newer than 1.9.8 in them fails every service-v2 apply at init
+    # (2026-10-09 incident). Check the root exactly like that, plus the
+    # child-module smoke example.
+    name: validate (1.9.8)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      # init only: `validate` at the root needs the aws.dns / aws.artifacts
+      # provider configs the leaves pass in (the smoke example supplies them).
+      - name: terraform init (module root, as the leaves load it)
+        run: terraform init -backend=false -input=false
+
+      - name: terraform validate (examples/smoke)
+        working-directory: examples/smoke
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+  test:
+    # `override_during` and file() in the mocks need Terraform >= 1.11, so the
+    # suite lives in test-suite/ (not tests/, which init parses by default).
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.16.4
+          terraform_wrapper: false
+
+      - name: terraform test
+        run: |
+          terraform init -backend=false -input=false -test-directory=test-suite
+          terraform test -test-directory=test-suite
